@@ -2,6 +2,8 @@
 
 ## 1.0.0（未发布）
 
+> 2026-10-30：项目定名 **DeepSeek-memory-Ido1um**；npm 包名 `deepseek-memory-ido1um`（npm 不允许大写）。
+
 首个公开版。
 
 - 四层记忆：原文日志 / 长期事实 / 事实卡投影 / 到期提醒
