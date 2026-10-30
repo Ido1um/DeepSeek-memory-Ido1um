@@ -1,0 +1,58 @@
+{
+  "name": "deepseek-memory-ido1um",
+  "version": "1.0.0",
+  "private": false,
+  "type": "module",
+  "description": "给聊天机器人用的长期记忆：7 天滚动日志 + 分档衰减 + 事实卡投影 + 3D 记忆星图工作台。",
+  "license": "MIT",
+  "author": "Ido1um",
+  "keywords": [
+    "memory",
+    "long-term-memory",
+    "chatbot",
+    "llm",
+    "mcp",
+    "deepseek"
+  ],
+  "engines": {
+    "node": ">=22.13.0"
+  },
+  "main": "src/store.mjs",
+  "exports": {
+    ".": "./src/store.mjs",
+    "./digest": "./src/digest.mjs",
+    "./config": "./src/config.mjs",
+    "./migrate": "./src/migrate.mjs",
+    "./engine": "./src/engine.mjs",
+    "./host": "./src/host.mjs",
+    "./score": "./src/score.mjs",
+    "./facts": "./src/facts.mjs",
+    "./longterm": "./src/longterm.mjs",
+    "./scoring": "./src/scoring-runner.mjs",
+    "./due": "./src/due.mjs"
+  },
+  "bin": {
+    "dsh-memory": "scripts/memory-cli.mjs"
+  },
+  "files": [
+    "src/",
+    "scripts/memory-cli.mjs",
+    "workbench/",
+    "docs/",
+    "config.example.json",
+    "README.md",
+    "LICENSE",
+    "CHANGELOG.md"
+  ],
+  "scripts": {
+    "test": "node test/memory.test.mjs",
+    "test:all": "node test/memory.test.mjs && node --test test/engine.test.mjs test/score.test.mjs test/scoring.test.mjs test/v7.test.mjs test/v8.test.mjs test/v8b.test.mjs test/v8c.test.mjs test/due.test.mjs",
+    "mcp": "node src/mcp-server.mjs",
+    "workbench": "node workbench/server.mjs --port 7351"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.30.0",
+    "js-yaml": "^4.3.2",
+    "zod": "^4.4.3"
+  }
+}

@@ -1,0 +1,46 @@
+{
+  // 复制成 config.json 后改这里。真实 config.json 不要提交到仓库。
+  "memory": {
+    "enabled": true,
+    "dir": "",                       // 留空 = ~/.deepseek-memory/data；也可写绝对路径
+    "windowDays": 7,
+    "dailyAt": "23:00",
+    "maxCharsPerMessage": 8000,
+    "handoverMaxChars": 3500,
+
+    // 轮转：真实 token ≥ 比例 × 窗口
+    "contextWindowTokens": 0,        // 0 = 自动（模型元数据 > 已观测最大×1.15）
+    "rotationThresholdRatio": 0.7,
+    "rotationCooldownMs": 600000,
+    "minRotateTokens": 20000,
+
+    "profile": {
+      "enabled": true,
+      "maxChars": 2000,
+      "hardReserveChars": 400,
+      "botMaxChars": 200,
+      "backupKeep": 5,
+      "source": "auto",
+      "reinjectOnUpdate": true
+    },
+
+    // 打分：preset 可选 balanced（默认）/ conservative / aggressive
+    "scoring": {
+      "preset": "balanced",
+      "mode": "shadow",              // off | shadow（只采样）| write（真写长期库）
+      "model": "two-dimensional"
+    },
+
+    // 会话开关：默认只对白名单里的会话生效
+    "policy": {
+      "enabled": true,
+      "defaultRecord": true,
+      "defaultInject": true,
+      "allowKeys": [],
+      "denyKeys": []
+    },
+
+    "reminders": { "enabled": true, "horizonHours": 24, "graceHours": 12 },
+    "invalidate": { "enabled": true, "qqCommand": true }
+  }
+}

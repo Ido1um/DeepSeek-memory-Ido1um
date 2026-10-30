@@ -1,0 +1,29 @@
+# 运行产物
+node_modules/
+npm-debug.log*
+*.log
+
+# 本机数据（绝不进仓库）
+data/
+raw/
+state/
+logs/
+digests/
+profile.md
+rules.md
+
+# 本机备份 / 影子 / 草稿
+workbench/backup/
+workbench/config.json
+shadow/
+scratch/
+*.bak
+*.bak-*
+*.bak.*
+_private/
+
+# 编辑器
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
