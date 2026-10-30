@@ -133,7 +133,7 @@ export function detectSignals(text = '') {
   return {
     facts,
     hard: facts.length > 0,
-    explicitRemember: /(记住|别忘|不要忘|记一下|帮我记|记牢)/.test(s),
+    explicitRemember: /(记住|别忘|不要忘|记一下|帮我记|记牢)/.test(s) && !/(记不住|不记得|没记住|记不清|记不得|无法.{0,3}记|不能.{0,3}记|记不下来)/.test(s),
     activeStatement: /^(我|咱|俺|用户)[^？?]{0,20}(是|叫|住|喜欢|讨厌|想要|怕|在)/.test(s),
     negative: /(不对|记错了|不是这样|别瞎记|谁跟你说的|没说过)/.test(s),
     question: isQuestion(s),

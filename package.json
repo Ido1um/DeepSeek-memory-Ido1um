@@ -45,7 +45,8 @@
     "test": "node test/memory.test.mjs",
     "test:all": "node test/memory.test.mjs && node --test test/engine.test.mjs test/score.test.mjs test/scoring.test.mjs test/v7.test.mjs test/v8.test.mjs test/v8b.test.mjs test/v8c.test.mjs test/due.test.mjs",
     "mcp": "node src/mcp-server.mjs",
-    "workbench": "node workbench/server.mjs --port 7351"
+    "workbench": "node workbench/server.mjs --port 7351",
+    "audit:facts": "node scripts/audit-facts.mjs"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.30.0",

@@ -32,6 +32,7 @@ node scripts/memory-cli.mjs status                                # 档位分布
 node scripts/memory-cli.mjs recall 生日                            # 查事实
 node scripts/memory-cli.mjs card                                  # 打印当前事实卡
 node scripts/memory-cli.mjs doctor                                # 体检（10 项，只报告不自动修）
+node scripts/audit-facts.mjs          # 审计：原文里能抽出的事实是否都进了库
 ```
 
 > 暂未发布到 npm，直接用源码即可；也不打算发布，避免包名和仓库名不一致带来的困惑。

@@ -5,7 +5,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-import { classOf } from '../src/facts.mjs';
+import { classOf, detectSignals } from '../src/facts.mjs';
 import { SCORING_DEFAULTS, stabilityOf } from '../src/score.mjs';
 import * as lt from '../src/longterm.mjs';
 import { classify, search } from '../src/scoring-runner.mjs';
@@ -105,4 +105,11 @@ test('事实卡：event 类不进卡', () => {
   const built = buildCard(facts, { maxChars: 800, hardReserveChars: 100, botMaxChars: 100 });
   assert.ok(built.text.includes('助手'));
   assert.ok(!built.text.includes('杭州'), '事件类不该出现在卡里');
+});
+
+test('否定语境不算「要求记住」', () => {
+  // 「无法记住发生过的所有事」里的「记住」不该生成备注事实
+  assert.equal(classify('其实人类也无法记住发生过的所有事，那就过好每一个七天吧').candidates.length, 0);
+  assert.equal(detectSignals('我记不住那么多').explicitRemember, false);
+  assert.equal(detectSignals('记住我不吃香菜').explicitRemember, true);
 });
