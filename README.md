@@ -46,6 +46,39 @@ node workbench/server.mjs --port 7351
 
 Windows 下也可以直接双击 `workbench\start.cmd`（无窗口版用 `open.vbs`）。
 
+## 日常运维
+
+| 想干什么 | 命令 |
+|---|---|
+| 今天记了什么、档位分布 | `node scripts/memory-cli.mjs status` |
+| 查某条事实（值/标签/正文任一命中） | `node scripts/memory-cli.mjs recall 生日` |
+| 看模型实际会读到的那张卡 | `node scripts/memory-cli.mjs card` |
+| 体检（数据完整性 / 备份 / token 日志 / 策略） | `node scripts/memory-cli.mjs doctor` |
+| 进程与日终是否正常 | `node scripts/memory-cli.mjs health` |
+| **怀疑漏记**：原文里能抽出的事实，是否都进了库 | `node scripts/audit-facts.mjs` |
+| 改档 / 改分 / 作废 / 恢复 | 工作台「长期事实」，或 `memory-cli.mjs invalidate <id>` |
+
+### 什么时候跑 audit
+
+只在你觉得「明明说过，它却忘了」时跑。它是**只读**的：把原文日志按当前的抽取规则重放一遍，再和事实库比对，不改任何文件。
+
+```
+$ node scripts/audit-facts.mjs
+数据目录   ~/.deepseek-memory/data
+会话       private:10001      窗口 7 天    打分模式 write
+主人消息   226 条（其中 2 条现在能抽出候选）
+库中事实   28 条
+
+✓ 没有漏记：能抽出候选的消息，库里都有对应事实。
+· 库里另有 27 条事实来自回填/手工（原文窗口外或已归档），正常
+```
+
+三种结果怎么读：
+
+- **✓ 没有漏记** —— 抽取规则与库一致，是「这句话本身没被规则命中」，不是丢数据。
+- **✗ 漏记 N 条** —— 会逐条列出原文与原因，多半是规则太窄（比如新说法），去 `src/facts.mjs` 加词表。
+- **窗口外的事实** —— 原文已归档，属于回填/手工，正常，不用管。
+
 ## 接到自己的机器人上
 
 记忆引擎不绑定任何 IM，只要给它三个东西：**收到消息**、**要发 prompt 时取注入**、**定期 tick**。
