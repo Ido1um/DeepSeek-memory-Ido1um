@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "private": false,
   "type": "module",
-  "description": "给聊天机器人用的长期记忆：7 天滚动日志 + 分档衰减 + 事实卡投影 + 3D 记忆星图工作台。",
+  "description": "给 DeepSeek 机器人做的记忆插件（仅供参考）",
   "license": "MIT",
   "author": "Ido1um",
   "keywords": [
