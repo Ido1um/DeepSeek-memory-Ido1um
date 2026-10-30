@@ -133,6 +133,18 @@ engine.startMaintenance();                 // ③ 起定时器（日终 + 到点
 
 保守 = 忘得慢、留给长期记忆的空间大（适合「怕丢东西」）；激进 = 忘得快、库里更干净（适合高频闲聊、事实更新快）。均衡是两边都不极端的那档。
 
+## 排障
+
+它忘了 / 它记错了 / 它不提醒 / 工作台打不开——四类问题各一张流程图，见 [`docs/排障.md`](docs/排障.md)。
+
+先跑这三条，一半的问题不用往下看：
+
+```bash
+node scripts/memory-cli.mjs health
+node scripts/memory-cli.mjs doctor
+node scripts/audit-facts.mjs
+```
+
 ## 安全
 
 - 默认 **只监听 127.0.0.1**，工作台不做鉴权，请不要暴露到公网。
