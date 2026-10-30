@@ -23,20 +23,23 @@
 ## 快速开始
 
 ```bash
-# 需要 Node ≥ 22.13
-npm i -g deepseek-memory-ido1um      # 或 git clone 后 npm i
+# 需要 Node ≥ 22.13（只用内置模块，没有第三方依赖）
+git clone https://github.com/Ido1um/DeepSeek-memory-Ido1um.git
+cd DeepSeek-memory-Ido1um
 
-dsh-memory init --dir ~/.deepseek-memory/data     # 建目录 + rules.md 模板
-dsh-memory status                                  # 看一眼：档位分布、日终、窗口、阈值
-dsh-memory recall 生日                              # 查事实
-dsh-memory card                                    # 打印当前事实卡
-dsh-memory doctor                                  # 体检（10 项，只报告不自动修）
+node scripts/memory-cli.mjs init --dir ~/.deepseek-memory/data   # 建目录 + rules.md 模板
+node scripts/memory-cli.mjs status                                # 档位分布、日终、窗口、阈值
+node scripts/memory-cli.mjs recall 生日                            # 查事实
+node scripts/memory-cli.mjs card                                  # 打印当前事实卡
+node scripts/memory-cli.mjs doctor                                # 体检（10 项，只报告不自动修）
 ```
+
+> 暂未发布到 npm，直接用源码即可；也不打算发布，避免包名和仓库名不一致带来的困惑。
 
 想看图：
 
 ```bash
-npm run workbench        # 或 node workbench/server.mjs --port 7351
+node workbench/server.mjs --port 7351
 # 浏览器打开 http://127.0.0.1:7351
 ```
 

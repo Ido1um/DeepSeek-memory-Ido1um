@@ -21,7 +21,7 @@ A 十分钟能用，B 是完整能力（注入 + 轮转 + 提醒），C 仍在�
 1. 建数据目录并导入：
 
 ```bash
-dsh-memory init --dir "%USERPROFILE%\.deepseek-memory\data"
+node scripts/memory-cli.mjs init --dir "%USERPROFILE%\.deepseek-memory\data"
 ```
 
 2. 在 DSH profile 的 `cordis.patch.yml` 里加一个 MCP server（路径换成你的实际位置）：
@@ -87,9 +87,9 @@ engine.startMaintenance();
 ### 检查是否接对了
 
 ```bash
-dsh-memory doctor          # 10 项：长期库可解析 / id 唯一 / 末行完整 / 卡未超限 / 备份 …
-dsh-memory status          # 档位分布、日终时间、窗口、轮转阈值
-dsh-memory health          # 服务在不在、日终是否新鲜（<26h）
+node scripts/memory-cli.mjs doctor          # 10 项：长期库可解析 / id 唯一 / 末行完整 / 卡未超限 / 备份 …
+node scripts/memory-cli.mjs status          # 档位分布、日终时间、窗口、轮转阈值
+node scripts/memory-cli.mjs health          # 服务在不在、日终是否新鲜（<26h）
 ```
 
 第一周建议 `scoring.mode = "shadow"`：只采样、不写长期库，确认抽取质量后再改 `"write"`。
@@ -112,7 +112,7 @@ dsh-memory health          # 服务在不在、日终是否新鲜（<26h）
 `node workbench/server.mjs --port 7351`，然后看控制台有没有报错；端口被占它会自动 +1，日志里会写实际端口。
 
 **Q：事实卡一直不更新？**
-卡是「库的投影」，只在日终（默认 23:00）或手动 `dsh-memory refresh-card` 时重排。改完事实想立刻看到，跑一次 `refresh-card`。
+卡是「库的投影」，只在日终（默认 23:00）或手动 `node scripts/memory-cli.mjs refresh-card` 时重排。改完事实想立刻看到，跑一次 `refresh-card`。
 
 **Q：客户端里看不到新注入？**
 卡对每个会话只注入一次；长会话不会自动重注入，要靠 `profile.reinjectOnUpdate`（默认开）在卡变化后补一次，或等轮转。

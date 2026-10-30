@@ -2,7 +2,7 @@
 
 ## 1.0.0（未发布）
 
-> 2026-10-30：项目定名 **DeepSeek-memory-Ido1um**；npm 包名 `deepseek-memory-ido1um`（npm 不允许大写）。
+> 2026-10-30：项目定名 **DeepSeek-memory-Ido1um**；仓库与 npm 包名若发布只能用小写 `deepseek-memory-ido1um`；**2026-10-30 决定不发布 npm**，以源码方式使用。
 
 首个公开版。
 

@@ -1,7 +1,7 @@
 {
   "name": "deepseek-memory-ido1um",
   "version": "1.0.0",
-  "private": false,
+  "private": true,
   "type": "module",
   "description": "给 DeepSeek 机器人做的记忆插件（仅供参考）",
   "license": "MIT",
@@ -30,9 +30,6 @@
     "./longterm": "./src/longterm.mjs",
     "./scoring": "./src/scoring-runner.mjs",
     "./due": "./src/due.mjs"
-  },
-  "bin": {
-    "dsh-memory": "scripts/memory-cli.mjs"
   },
   "files": [
     "src/",
