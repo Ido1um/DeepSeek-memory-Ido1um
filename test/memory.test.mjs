@@ -91,7 +91,7 @@ scenario('日志：用户私聊 user+assistant 各一条，同 messageId 不重�
 
 scenario('日志：群聊与他人私聊不写入', () => {
   const root = tmpDir();
-  assert.equal(recordIncoming({ key: 'group:1131679307', text: '群里说句话', sender: '群友' }), false);
+  assert.equal(recordIncoming({ key: 'group:10002', text: '群里说句话', sender: '群友' }), false);
   assert.equal(recordIncoming({ key: 'private:999', text: '陌生人私聊' }), false);
   assert.equal(fs.existsSync(path.join(root, 'raw', 'hot')), false, 'raw/hot 目录不该被创建');
 });
