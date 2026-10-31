@@ -25,6 +25,8 @@ const DESIRED_FILE = path.join(HERE, 'config.json');
 const BRIDGE_CFG = process.env.WORKBENCH_BRIDGE_CFG || '';
 const BRIDGE_LOG = process.env.WORKBENCH_BRIDGE_LOG || '';
 const DEFAULT_DATA = DEFAULT_DATA_DIR;
+// 可选：设了就要求写操作带 x-workbench-token（GET 不受影响）
+const WORKBENCH_TOKEN = String(process.env.WORKBENCH_TOKEN || '').trim();
 const dataDirOf = (memDir = '') => resolveDataDir({ explicit: memDir });
 
 const PORT_ARG = process.argv.indexOf('--port');
@@ -592,6 +594,14 @@ const server = http.createServer((req, res) => {
       return send(res, 200, fs.readFileSync(full), type);
     }
     return send(res, 404, { error: 'asset not found' });
+  }
+  if (req.method !== 'GET' && WORKBENCH_TOKEN) {
+    const got = String(req.headers['x-workbench-token'] || url.searchParams.get('token') || '');
+    if (got !== WORKBENCH_TOKEN) return send(res, 401, { error: '缺少或错误的 x-workbench-token' });
+  }
+  if (req.method !== 'GET' && WORKBENCH_TOKEN) {
+    const got = String(req.headers['x-workbench-token'] || url.searchParams.get('token') || '');
+    if (got !== WORKBENCH_TOKEN) return send(res, 401, { error: '缺少或错误的 x-workbench-token' });
   }
   const key = `${req.method} ${url.pathname}`;
   const handler = routes[key];

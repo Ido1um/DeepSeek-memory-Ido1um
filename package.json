@@ -1,6 +1,6 @@
 {
   "name": "deepseek-memory-ido1um",
-  "version": "1.1.0",
+  "version": "9.2.0",
   "private": true,
   "type": "module",
   "description": "给 DeepSeek 机器人做的记忆插件（仅供参考）",
@@ -42,15 +42,19 @@
     "CHANGELOG.md"
   ],
   "scripts": {
-    "test": "node test/memory.test.mjs",
+    "test": "node --test",
     "test:all": "node --test",
+    "test:engine": "node --test test/engine.test.mjs",
+    "test:score": "node --test test/score.test.mjs",
+    "test:scoring": "node --test test/scoring.test.mjs",
+    "test:due": "node --test test/due.test.mjs",
+    "test:digest": "node --test test/digest.test.mjs",
+    "test:reminder": "node --test test/reminder.test.mjs",
     "mcp": "node src/mcp-server.mjs",
-    "workbench": "node workbench/server.mjs --port 7351",
-    "audit:facts": "node scripts/audit-facts.mjs"
+    "scan:secrets": "node scripts/scan-secrets.mjs"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.30.0",
-    "js-yaml": "^4.3.2",
     "zod": "^4.4.3"
   }
 }

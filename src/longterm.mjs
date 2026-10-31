@@ -100,6 +100,7 @@ export function appendEvent(row, dir = '') {
 }
 
 export function readShadow(limit = 0, dir = '') {
+  if (typeof limit === 'string') { dir = limit; limit = 0; }
   const { rows, bad } = readJsonl(paths(dir).shadow);
   const list = limit > 0 ? rows.slice(-limit) : rows;
   return { rows: list, total: rows.length, bad };

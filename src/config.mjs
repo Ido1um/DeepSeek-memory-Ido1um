@@ -12,7 +12,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import { DEFAULT_CONFIG_FILE, DEFAULT_DATA_DIR } from './paths.mjs';
 import path from 'node:path';
-import YAML from 'js-yaml';
+import { readRef } from './miniyaml.mjs';
 
 export const DEFAULT_DIR = DEFAULT_DATA_DIR;
 export const DEFAULT_CONFIG_PATH = DEFAULT_CONFIG_FILE;
@@ -102,8 +102,8 @@ export function readDshCredential(ref) {
   const name = String(ref ?? '').trim();
   if (!name) return '';
   try {
-    const doc = YAML.load(fs.readFileSync(path.join(resolveDshHome(), '.credentials.yaml'), 'utf8'));
-    const value = doc?.refs?.[name];
+    const text = fs.readFileSync(path.join(resolveDshHome(), '.credentials.yaml'), 'utf8');
+    const value = readRef(text, name);
     return typeof value === 'string' ? value.trim() : '';
   } catch {
     return '';

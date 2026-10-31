@@ -366,7 +366,15 @@ export function createMemoryEngine({
   }
 
   // ── 注入拼装：事实卡（按会话一次 / 更新后再注入）+ 交接摘要（按 consumedAt 一次） ─
-  function composePrompt(key, sessionId, promptText) {
+  // 兼容 composePrompt(key, promptText) 与 (key, sessionId, promptText)
+  function composePrompt(key, a, b) {
+    let sessionId = a;
+    let promptText = b;
+    if (b === undefined) {
+      promptText = a;
+      sessionId = '';
+      try { sessionId = (s.getSessionId?.(key) || '').trim(); } catch { sessionId = ''; }
+    }
     const c = config();
     const pol = policyFor(key);
     if (!policy.capabilities(pol.state).inject) {

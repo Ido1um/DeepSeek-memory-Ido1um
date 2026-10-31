@@ -32,7 +32,7 @@ const PATTERNS = [
     key: 'nickname',
     label: '称呼',
     re: /(以后叫我|叫我|称呼我|称呼)/,
-    implicitSubject: '你', // “以后叫我助手”天然是在跟机器人说
+    implicitSubject: '我', // 用户给自己起称呼；「以后叫你 X」靠最近主语判 bot
   },
   {
     key: 'residence',
@@ -43,7 +43,22 @@ const PATTERNS = [
     key: 'job',
     label: '工作',
     re: /(工作单位|上班|职业|做哪行)/,
+    valueMode: 'before',
   },
+  {
+    key: 'name',
+    label: '名字',
+    re: /^我叫/,
+    implicitSubject: '我',
+  },
+  {
+    key: 'nickname',
+    label: '称呼',
+    re: /(以后叫你|叫你)/,
+    implicitSubject: '你',
+  },
+  { key: 'skill', label: '在学', re: /(在学|正在学|开始学|学会|学习)/ },
+  { key: 'pet', label: '宠物', re: /(养了|养的|养只|养了只)/ },
 ];
 
 const PUNCT = /[，。！？；、,.!?;:\n\r]/;
@@ -72,17 +87,36 @@ function valueAfter(text, index) {
   const m = rest.match(PUNCT);
   if (m) rest = rest.slice(0, m.index);
   rest = rest.trim();
+  rest = rest.replace(/^[只条了]+/, '');
   rest = rest.replace(/[吧呀啊哦了呢哈嘛]+$/, '');
   return rest.length > 16 ? rest.slice(0, 16) : rest;
 }
 
-/** 在 pattern 前后 8 字内找主语。 */
+/** 在 pattern 附近找主语：左右各 14/8 字，离硬词最近优先，同距长词优先。 */
 function subjectNear(text, start, end) {
-  const left = text.slice(Math.max(0, start - 8), start);
-  for (const s of SUBJECTS) if (left.includes(s.word)) return s;
-  const right = text.slice(end, Math.min(text.length, end + 6));
-  for (const s of SUBJECTS) if (right.includes(s.word)) return s;
-  return null;
+  const left = text.slice(Math.max(0, start - 14), start);
+  const right = text.slice(end, Math.min(text.length, end + 8));
+  const hits = [];
+  for (const s of SUBJECTS) {
+    const li = left.lastIndexOf(s.word);
+    if (li >= 0) hits.push({ s, dist: left.length - (li + s.word.length), side: 0 });
+    const ri = right.indexOf(s.word);
+    if (ri >= 0) hits.push({ s, dist: ri, side: 1 });
+  }
+  if (!hits.length) return null;
+  hits.sort((a, b) => a.dist - b.dist || b.s.word.length - a.s.word.length || a.side - b.side);
+  return hits[0].s;
+}
+
+/** 从硬词往前取值（「我在 X 上班」→ X）。 */
+function valueBefore(text, start) {
+  const left = text.slice(Math.max(0, start - 18), start);
+  const parts = left.split(/[，。！？；、,.!?;:（）()\s]+/).filter(Boolean);
+  let seg = parts.length ? parts[parts.length - 1] : '';
+  seg = seg.replace(/^.*(?:我在|在|是|做|干|到|去)/, '');
+  seg = seg.replace(/[的吧呀啊哦了呢哈嘛]+$/, '').trim();
+  if (seg.length < 2) return '';
+  return seg.length > 16 ? seg.slice(-16) : seg;
 }
 
 /** 疑问句不当事实（"你生日几号" 只算提问）。 */
@@ -107,7 +141,7 @@ export function extractHardFacts(text = '') {
     let sub = subjectNear(s, start, end);
     if (!sub && p.implicitSubject) sub = SUBJECTS.find((x) => x.word === p.implicitSubject);
     if (!sub) continue;
-    const value = valueAfter(s, end);
+    const value = p.valueMode === 'before' ? valueBefore(s, start) : valueAfter(s, end);
     if (!value || VERBY_VALUE.test(value)) continue;
     if (p.key === 'name' && sub.about === 'bot') {
       const around = s.slice(Math.max(0, start - 10), Math.min(s.length, end + 14));

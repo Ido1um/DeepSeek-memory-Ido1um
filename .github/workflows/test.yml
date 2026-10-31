@@ -1,0 +1,28 @@
+name: test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    name: node ${{ matrix.node }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ['22', '24']
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+
+      # 核心零第三方依赖：不跑 npm install 也应该全绿（这是本仓库的承诺之一）
+      - name: 自检（不装依赖）
+        run: node --test
+
+      - name: 密钥与个人路径扫描
+        run: node scripts/scan-secrets.mjs

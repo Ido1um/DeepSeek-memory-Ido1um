@@ -8,8 +8,10 @@
 |---|---|---|
 | **原文日志** | 最近 7 天逐条对话（`raw/hot/<日>.jsonl`） | 关键词检索、审计 |
 | **长期事实** | 抽出来的一句话事实（生日、喜好、约定、待办…），带档位和分数 | 注入、检索、星图 |
-| **事实卡** | 事实库的**投影**，≤ 2000 字，一个会话只注入一次 | 模型的「长期记忆」 |
+| **事实卡** | 事实库的**投影**，默认 1500 字（可调 200–8000），一个会话只注入一次 | 模型的「长期记忆」 |
 | **提醒** | 带截止日期的事项，到点前一天推一次 | 宿主回调 |
+
+注入时还有预算上限：规则 600 + 卡 1200 + 待办 200 + 检索 500，总计 2500 字（`inject.budget`，超了按优先级丢）。
 
 四条设计原则：
 
@@ -23,7 +25,7 @@
 ## 快速开始
 
 ```bash
-# 需要 Node ≥ 22.13（只用内置模块，没有第三方依赖）
+# 需要 Node ≥ 22.13；核心零第三方依赖（连 js-yaml 都拆掉了）
 git clone https://github.com/Ido1um/DeepSeek-memory-Ido1um.git
 cd DeepSeek-memory-Ido1um
 
@@ -36,6 +38,7 @@ node scripts/audit-facts.mjs          # 审计：原文里能抽出的事实是�
 ```
 
 > 暂未发布到 npm，直接用源码即可；也不打算发布，避免包名和仓库名不一致带来的困惑。
+> 只有 `src/mcp-server.mjs`（把记忆暴露成 MCP 工具）需要 `npm install` 装 `@modelcontextprotocol/sdk` 和 `zod`；CLI / 引擎 / 工作台都不需要。
 
 想看图：
 
@@ -45,6 +48,13 @@ node workbench/server.mjs --port 7351
 ```
 
 Windows 下也可以直接双击 `workbench\start.cmd`（无窗口版用 `open.vbs`）。
+
+工作台的写接口默认只靠「只监听 127.0.0.1」保护；同一台机器上还有别的程序时，建议设一个口令：
+
+```powershell
+$env:WORKBENCH_TOKEN = "自己起一个"; node workbench\server.mjs --port 7351
+# 之后 POST 要带 x-workbench-token（GET 页面不受影响）
+```
 
 ## 日常运维
 

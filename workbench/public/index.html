@@ -666,7 +666,9 @@ function render(s) {
   const cp = c.limit ? Math.min(100, 100 * c.chars / c.limit) : 0;
   $('cardBar').style.width = cp + '%';
   $('cardBar').className = cp >= 98 ? 'bad' : cp >= 90 ? 'warn' : '';
-  $('cardSub').textContent = c.bullets + ' 条 · 更新于 ' + ago(c.updatedAt) + (cp >= 98 ? ' · 已顶满，需按投影规则挤出' : '');
+  $('cardSub').textContent = c.bullets + ' 条 · 更新于 ' + ago(c.updatedAt)
+      + (typeof c.dropped === 'number' ? ' · 本次挤出 ' + c.dropped + ' 条' : '')
+      + (cp >= 98 ? ' · 已顶满' : '');
   $('cardText').textContent = (c.text || '').trim() || '暂无内容';
   if (document.activeElement !== $('cardLen')) $('cardLen').value = String(c.limit || 1500);
   const cMeta = $('cardPreviewMeta');
