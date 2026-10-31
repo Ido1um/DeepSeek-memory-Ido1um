@@ -60,7 +60,7 @@ test('日终：模型摘要成功时写进 profile.md', async (t) => {
       called += 1;
       assert.ok(maxChars > 0);
       assert.equal(typeof previousProfile, 'string');
-      return { ok: true, text: '【长期记忆（事实卡）】\n· 主人 9 月 5 日生\n', mode: 'model' };
+      return { ok: true, text: '【长期记忆（事实卡）】\n· 用户 9 月 5 日生\n', mode: 'model' };
     },
   };
   const engine = createMemoryEngine({ host: createNullHost({ ownerKey: KEY }), digest });
@@ -105,4 +105,58 @@ test('日终：投影模式不调用模型（source=projection）', async (t) =>
   const out = await engine.runDailyMaintenance(Date.now(), { force: true });
   assert.equal(called, 0);
   assert.equal(out.profile.mode, 'projection');
+});
+
+// —— summarizeHandover（轮转摘要）与提取式兜底：以前的用例只覆盖了 summarizeProfile ——
+
+test('summarizeHandover：窗口内没有聊天记录时不联网、返回失败', async (t) => {
+  const { dir } = setup(t, {});
+  const { summarizeHandover } = await import('../src/digest.mjs');
+  const out = await summarizeHandover({ key: KEY, sinceMs: Date.now() - 60 * 60 * 1000 });
+  assert.equal(out.ok, false);
+  assert.match(out.error, /没有聊天记录/);
+  assert.equal(fs.existsSync(path.join(dir, 'digests')), false, '失败时不该留下摘要文件');
+});
+
+test('extractProfileFallback：只取用户一侧、保留旧卡 bullet、超长截断', async () => {
+  const { extractProfileFallback } = await import('../src/digest.mjs');
+  const transcript = [
+    '[2026-10-30 10:00] 用户：我生日是 9 月 5 日，记住',
+    '[2026-10-30 10:01] 助手：唔……人家记住了，快两点了',
+    '[2026-10-30 10:02] 用户：今天好累', // 没有事实词，不该进卡
+  ].join('\n');
+  const out = extractProfileFallback({
+    previousProfile: '【长期记忆（事实卡）】\n· 旧的一条约定\n',
+    transcript,
+    maxChars: 500,
+  });
+  assert.equal(typeof out, 'string', '返回的是 bullet 文本，不是 {ok,text}');
+  assert.match(out, /9 月 5 日/);
+  assert.match(out, /旧的一条约定/, '旧卡 bullet（· 前缀）要保留');
+  assert.doesNotMatch(out, /快两点了/, '机器人的口水不能进卡');
+  assert.doesNotMatch(out, /今天好累/, '无事实词的句子不进卡');
+  assert.ok(out.length <= 500);
+});
+
+test('rotate：轮转摘要失败时照样换会话，交接退回提取式', async (t) => {
+  const { dir } = setup(t, { summary: { enabled: true, maxChars: 1800 } });
+  const startedAt = Date.now() - 2 * 60 * 60 * 1000;
+  const sid = 'session-handover-fail-0001';
+  store.noteSession(KEY, sid, startedAt);
+  const tag = `h-${startedAt}`;
+  store.recordIncoming({ key: KEY, text: '用户：我生日是 9 月 5 日，记住', sender: '用户', time: startedAt + 1000, messageId: `${tag}-m1` });
+  store.recordOutgoing({ key: KEY, text: '记住了', time: startedAt + 2000, messageId: `${tag}-m2` });
+
+  const host = createNullHost({ ownerKey: KEY });
+  host.setSession(KEY, sid);
+  const digest = { summarizeHandover: async () => ({ ok: false, error: 'model down', mode: 'skip' }) };
+  const engine = createMemoryEngine({ host, digest });
+
+  assert.equal(await engine.rotate(KEY, { force: true, reason: 'manual' }), true, '摘要失败不能阻断轮转');
+  assert.deepEqual(host.calls.retire, [KEY]);
+  const handover = store.peekHandover(KEY);
+  assert.ok(handover?.text.includes('【7 天记忆交接】'));
+  assert.match(handover.text, /9 月 5 日/, '提取式兜底要带上事实');
+  assert.equal(store.getSessionInfo(KEY).rotations, 1);
+  assert.ok(fs.existsSync(path.join(dir, 'digests')), '兜底摘要也要落盘');
 });

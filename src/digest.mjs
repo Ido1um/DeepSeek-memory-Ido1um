@@ -180,11 +180,11 @@ export function extractProfileFallback({ previousProfile = '', transcript = '', 
   const prevBullets = String(previousProfile || '')
     .split(/\n+/)
     .map((l) => l.trim())
-    .filter((l) => /^[-*]\s/.test(l))
+    .filter((l) => /^[-*·]\s/.test(l))
     .slice(-20);
   const out = [];
   for (const line of [...prevBullets, ...lines]) {
-    const t = line.replace(/^[*]\s+/, '- ').trim();
+    const t = line.replace(/^[*·]\s+/, '- ').trim();
     if (!t || out.includes(t)) continue;
     if (out.join('\n').length + t.length + 1 > maxChars) break;
     out.push(t);
