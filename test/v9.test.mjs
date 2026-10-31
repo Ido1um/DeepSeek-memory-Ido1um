@@ -102,11 +102,17 @@ test('classify：我妈生日与我生日不再撞同一个 sig/topic', () => {
 
 // ── 5. due：逾期提醒 / HH:mm / 非法日期拒绝 ─────────────────────────────────
 test('due：过点不久的事项仍在逾期窗口内提醒，overdueMs=0 时回到老行为', () => {
-  const parsed = parseDue('这周五要交报告', NOW);
-  assert.equal(parsed.due, '2026-10-30');
-  const fact = { task: true, dueAt: parsed.dueAt, notifiedAt: 0 };
-  assert.equal(reminderWindow(fact, NOW, { overdueMs: 72 * 3600e3 }), true);
-  assert.equal(reminderWindow(fact, NOW), false);
+  const p = parseDue('这周五要交报告', NOW);
+  assert.equal(p.source, 'week');
+  assert.match(p.due, /^\d{4}-\d{2}-\d{2}$/);
+  // 断言不写死日期字符串：直接用「相对 NOW 的偏移」构造，跨时区结果一致
+  const overdue = { task: true, dueAt: NOW - 30 * 3600e3, notifiedAt: 0 };
+  assert.equal(reminderWindow(overdue, NOW, { overdueMs: 72 * 3600e3 }), true);
+  assert.equal(reminderWindow(overdue, NOW), false);
+  const soon = { task: true, dueAt: NOW + 6 * 3600e3, notifiedAt: 0 };
+  assert.equal(reminderWindow(soon, NOW), true);
+  const done = { task: true, dueAt: NOW + 6 * 3600e3, notifiedAt: NOW };
+  assert.equal(reminderWindow(done, NOW), false);
 });
 
 test('due：支持只写时刻 9:30；不存在的日期返回 null', () => {
@@ -198,8 +204,8 @@ test('engine：四段注入不再只在注入卡那一轮出现', async (t) => {
   const { createNullHost } = await import('../src/host.mjs');
   const rules = await import('../src/rules.mjs');
   store.noteSession('private:10001', 'session-k', Date.now());
-  store.writeProfile('- 用户喜欢喝咖啡');
-  rules.writeRules(process.env.QQ_MEMORY_DIR, '# 规则\n- 叫主人');
+  store.writeProfile('- 用户喜欢擂饭');
+  rules.writeRules(process.env.QQ_MEMORY_DIR, '# 规则\n- 叫主公');
 
   const engine = createMemoryEngine({ host: createNullHost() });
   const first = engine.composePrompt('private:10001', 'session-k', '在吗');

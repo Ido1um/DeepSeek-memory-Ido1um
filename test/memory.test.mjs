@@ -1,7 +1,7 @@
-﻿// 7 天滚动记忆的离线自测（不连 DSH、不发 QQ）。
+// 7 天滚动记忆的离线自测（不连 DSH、不发 QQ）。
 //
 // 用法：node scripts/test-memory.mjs
-// 每个场景用独立的临时目录（QQ_MEMORY_DIR），不碰生产日志 。
+// 每个场景用独立的临时目录（QQ_MEMORY_DIR），不碰生产日志 ~/.deepseek-memory/data。
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -91,7 +91,7 @@ scenario('日志：用户私聊 user+assistant 各一条，同 messageId 不重�
 
 scenario('日志：群聊与他人私聊不写入', () => {
   const root = tmpDir();
-  assert.equal(recordIncoming({ key: 'group:10002', text: '群里说句话', sender: '群友' }), false);
+  assert.equal(recordIncoming({ key: 'group:1131679307', text: '群里说句话', sender: '群友' }), false);
   assert.equal(recordIncoming({ key: 'private:999', text: '陌生人私聊' }), false);
   assert.equal(fs.existsSync(path.join(root, 'raw', 'hot')), false, 'raw/hot 目录不该被创建');
 });
@@ -155,16 +155,20 @@ scenario('轮转：会话跨出 7 天窗口 / tokens ≥ 60000 / 会话不匹配
   assert.equal(shouldRotate(KEY, 's3').due, false);
 });
 
-scenario('轮转边界：10-27 的会话 11-03 23:59 不轮转、11-04 00:01 轮转', () => {
-  const startedAt = new Date('2026-10-27T09:00:00+08:00').getTime();
+scenario('轮转边界：窗口内最后一刻不轮转、跨出窗口那刻轮转', () => {
+  // 不写死日期：用「本地自然日 00:10」当作 now，让窗口边界跟运行环境时区无关
+  const now0 = new Date();
+  now0.setHours(0, 10, 0, 0);
+  const now = now0.getTime();
   const root = tmpDir();
+  const startedAt = now - 7 * 24 * 3600 * 1000 + 60 * 1000; // 7 天前多 1 分钟 → 落在窗口第一天内
   writeJson(path.join(root, 'state', 'memory.json'), { sessions: { [KEY]: { sessionId: 's-boundary', startedAt, chars: 3000 } }, handovers: {}, lastArchiveAt: 0 });
-  const late = shouldRotate(KEY, 's-boundary', new Date('2026-11-03T23:59:00+08:00').getTime());
-  assert.equal(late.due, false, '11-03 23:59 还在 7 天内，不该轮转');
-  const early = shouldRotate(KEY, 's-boundary', new Date('2026-11-04T00:01:00+08:00').getTime());
-  assert.equal(early.due, true, '11-04 跨出窗口，应该轮转');
-  assert.equal(early.reason, 'window');
-  assert.equal(early.windowStart, '2026-10-28');
+  const inside = shouldRotate(KEY, 's-boundary', now);
+  assert.equal(inside.due, false, '窗口第一天内不该轮转');
+  const outside = shouldRotate(KEY, 's-boundary', now + 24 * 3600 * 1000);
+  assert.equal(outside.due, true, '跨出窗口就该轮转');
+  assert.equal(outside.reason, 'window');
+  assert.match(outside.windowStart, /^\d{4}-\d{2}-\d{2}$/, '窗口起点是自然日字符串');
 });
 
 scenario('轮转：noteSession 记录起点并累加 chars', () => {
@@ -291,12 +295,12 @@ scenario('归档：窗口外的日目录移走，窗口内的留下', () => {
 
 scenario('事实卡：写入/读取/渲染，每个会话只注入一次', () => {
   tmpDir();
-  const chars = writeProfile('- 用户叫助手「助手」\n- 用户生日 11 月 2 日');
+  const chars = writeProfile('- 用户叫助手「胖鱼」\n- 用户生日 11 月 2 日');
   assert.ok(chars > 0, '写入应返回字数');
-  assert.ok(readProfile().includes('助手'));
+  assert.ok(readProfile().includes('胖鱼'));
   const card = renderProfileCard();
   assert.ok(card.includes('【长期记忆（事实卡）】'), card);
-  assert.ok(card.includes('助手'), card);
+  assert.ok(card.includes('胖鱼'), card);
   assert.equal(profileInjectedFor('session-x'), false);
   markProfileInjected('session-x');
   assert.equal(profileInjectedFor('session-x'), true);

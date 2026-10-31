@@ -11,7 +11,8 @@ import {
 } from '../src/score.mjs';
 import { extractHardFacts, detectSignals, aboutOf, isQuestion } from '../src/facts.mjs';
 
-const T0 = Date.parse('2026-10-29T10:00:00+08:00');
+// 锚点用本地 12:00：任何时区下 +1h/+2h/+1d 都不会跨自然日
+const T0 = new Date(2026, 9, 29, 12, 0, 0, 0).getTime();
 const at = (d) => T0 + d * DAY;
 
 test('重要度：默认 0.5，主动陈述 0.6，明确要求记住 0.8，硬事实 1.0', () => {
@@ -54,10 +55,12 @@ test('复习拉长稳定度 S：S 变大、分数变高', () => {
 });
 
 test('同日重复增益因子：1 → 0.5 → 0.25，跨日重置为 1', () => {
-  const base = { tier: 'general', I: 0.6, s: 3, lastAt: at(0), sameDayHits: 1 };
-  const same1 = mentionGain(base, at(0) + 3600_000); // 同日第 2 次
-  const same2 = mentionGain({ ...base, sameDayHits: 2 }, at(0) + 7200_000); // 同日第 3 次
-  const nextDay = mentionGain(base, at(1));
+  // 用「本地 12:00」当锚：任何时区下 +1h/+2h/+1d 都不会跨自然日（T0 是 +08:00 字面量，在 UTC-4 下会跨日）
+  const noon = new Date(2026, 9, 29, 12, 0, 0, 0).getTime();
+  const base = { tier: 'general', I: 0.6, s: 3, lastAt: noon, sameDayHits: 1 };
+  const same1 = mentionGain(base, noon + 3600_000); // 同日第 2 次
+  const same2 = mentionGain({ ...base, sameDayHits: 2 }, noon + 7200_000); // 同日第 3 次
+  const nextDay = mentionGain(base, noon + 86400_000);
   assert.equal(same1, 0.5);
   assert.equal(same2, 0.25);
   assert.equal(nextDay, 1);
