@@ -131,7 +131,7 @@ function loadBridgeMemory() {
 /* ---- 数据目录：校验 / 探测 / 控制台地址 ---- */
 
 const normDir = (p) => String(p ?? '').trim().replace(/^["']|["']$/g, '').replace(/[\\/]+$/, '');
-const isAbsWinPath = (p) => /^[A-Za-z]:[\\/]/.test(p) || /^\\\\[^\\]/.test(p);
+const isAbsWinPath = (p) => /^[A-Za-z]:[\\/]/.test(p) || /^\\\\[^\\]/.test(p) || path.posix.isAbsolute(String(p));
 
 function probeDir(input) {
   const dir = normDir(input);
