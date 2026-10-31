@@ -10,6 +10,7 @@
 - **`/api/config` 校验**：目录必须已存在（先点「创建目录」）、未知键 400、数字/布尔类型错 400（之前 `windowDays:"abc"` 会存成 null）。
 - **`/api/fact` 校验**：op 白名单 `invalidate/reinstate/manual/reset/badhit`；id 必须真实存在，否则 404，不写墓碑也不写审计。
 - **apply 前目录体检**：空目录或含 `profile.md`/`state`/`rules.md`/`raw` 才放行；明显不是记忆目录 400（`force:true` 可覆盖）；磁盘根目录直接拒。
+- **目录校验兼容 POSIX 绝对路径**：isAbsWinPath() 原来只认 C:\\ / \\\\server，Linux 上会把合法目录判成 400（CI 抓到，已修）。
 - **检索**：`search({limit:0})` 现在返回空数组，不再静默回退默认条数。
 - **测试**：新增 `test/workbench-api.test.mjs`（临时目录 + 随机端口真起服务），覆盖令牌/Host/Content-Type/目录体检/幽灵 id；本地全套 158。
 
