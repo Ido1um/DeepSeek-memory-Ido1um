@@ -24,6 +24,7 @@ import {
   round2
 } from './score.mjs';
 import * as lt from './longterm.mjs';
+import { attrsOf, fragmentsOf, loadV10, normalizeV10, activationOf, qValueOf, qLevelOf, qLabelOf, detailOf, emotionOf, consolidationOf, interferenceOf, explain as v10Explain, passesSalience } from './v10.mjs';
 import fs from 'node:fs';
 import path from 'node:path';
 
@@ -58,7 +59,7 @@ function shortHash(s) {
  * 一条入站文本值不值得记：抽硬事实；抽不到但明确说「记住」→ 记一条备注。
  * @returns {{signals:object, candidates:Array}}
  */
-export function classify(text, cfg = SCORING_DEFAULTS) {
+export function classify(text, cfg = SCORING_DEFAULTS, opts = {}) {
   const t = String(text ?? '').trim();
   const signals = detectSignals(t);
   const candidates = [];
@@ -105,6 +106,17 @@ export function classify(text, cfg = SCORING_DEFAULTS) {
     });
   }
 
+  // v10：候选补轻量属性与原文片段（关闭时不给候选加字段，事件流逐字节不变）
+  if (opts.attrs && candidates.length) {
+    const a = attrsOf(t);
+    for (const c of candidates) {
+      c.emo = a.emo;
+      c.rel = a.rel;
+      c.scene = a.scene;
+      c.fragments = fragmentsOf(t, c.value, opts.fragmentsMax || 3);
+    }
+  }
+
   return { signals, candidates };
 }
 
@@ -112,12 +124,13 @@ export function classify(text, cfg = SCORING_DEFAULTS) {
  * 入站记一条（引擎在每条消息写入日志后调用）。
  * @returns {{mode:string, added:Array, mentioned:Array, skipped?:string}}
  */
-export function recordInbound({ key = '', text = '', ts = Date.now(), scoring, dir = '', itemId = 0 } = {}) {
+export function recordInbound({ key = '', text = '', ts = Date.now(), scoring, dir = '', itemId = 0, v10: v10raw } = {}) {
   const cfg = normalizeScoring(scoring);
   const mode = cfg.mode;
   if (mode === 'off') return { mode, added: [], mentioned: [], skipped: 'off' };
+  const v10cfg = v10raw && typeof v10raw === 'object' ? normalizeV10(v10raw) : loadV10(dir);
 
-  const { signals, candidates } = classify(text, cfg);
+  const { signals, candidates } = classify(text, cfg, { attrs: v10cfg.enabled === true, fragmentsMax: v10cfg.fragmentsMax });
   if (!candidates.length) {
     if (mode === 'shadow') lt.bumpShadowStats({ messages: 1, signals: signals.hard ? 1 : 0 }, ts, dir);
     logLine(dir, { at: ts, mode, key, cand: 0, added: 0, mentioned: 0, text });
@@ -203,6 +216,8 @@ export function recordInbound({ key = '', text = '', ts = Date.now(), scoring, d
         hits: 1,
         lastAt: ts,
         at: ts,
+        // v10：只有开启时才写属性（关闭时事件与旧版逐字节一致）
+        ...(c.emo != null ? { emo: c.emo, rel: c.rel || 0, scene: c.scene || [], fragments: c.fragments || [] } : {}),
         ...(c.task ? { task: true, due: c.due, dueAt: c.dueAt, duePhrase: c.duePhrase } : {})
       };
       if (mode === 'write') lt.appendEvent(row, dir);
@@ -313,7 +328,7 @@ export function settle({ now = Date.now(), scoring, dir = '' } = {}) {
  * 检索：档位优先（hard → long → general → temp），同档按分数；默认过滤作废/过期。
  * @returns {Array} describe() 结果 + text
  */
-export function search({ query = '', limit = 5, now = Date.now(), scoring, includeInvalidated = false, facts: provided, dir = '', includeHistory = false } = {}) {
+export function search({ query = '', limit = 5, now = Date.now(), scoring, includeInvalidated = false, facts: provided, dir = '', includeHistory = false, recordRetrieved: recordOpt = false, recordBy = 'search' } = {}) {
   const cfg = normalizeScoring(scoring);
   // limit<=0 表示“不要结果”，而不是悄悄回退成默认条数
   const want = Number(limit);
@@ -326,7 +341,7 @@ export function search({ query = '', limit = 5, now = Date.now(), scoring, inclu
   const facts = source.filter((f) => includeInvalidated || f.status === 'active');
   const ranked = facts
     .map((f) => {
-      const d = { ...describe(f, now, cfg), id: f.id, status: f.status, label: f.label, text: f.text, sig: f.sig, about: f.about, value: f.value, pattern: f.pattern, topic: f.topic || '', quote: f.quote || '', lastAt: f.lastAt || 0, versions: Number(f.versions) || 1 };
+      const d = { ...describe(f, now, cfg), id: f.id, status: f.status, label: f.label, text: f.text, sig: f.sig, about: f.about, value: f.value, pattern: f.pattern, topic: f.topic || '', quote: f.quote || '', lastAt: f.lastAt || 0, versions: Number(f.versions) || 1, accessCount: Number(f.accessCount) || 0, lastRetrievedAt: Number(f.lastRetrievedAt) || 0, emo: Number(f.emo) || 0, rel: Number(f.rel) || 0, scene: Array.isArray(f.scene) ? f.scene : [], fragments: Array.isArray(f.fragments) ? f.fragments : [] };
       // 命中判定：值/原文/标签/sig/模式，任一包含关键词即可
       const hit = q
         ? [f.text, f.value, f.label, f.sig, f.pattern].some((s) => String(s ?? '').includes(q))
@@ -357,5 +372,78 @@ export function search({ query = '', limit = 5, now = Date.now(), scoring, inclu
       r.versions = Math.max(Number(r.versions) || 1, seen);
     }
   }
-  return out.slice(0, Math.max(1, Number(limit) || 5));
+  // v10：只在这条路径上补激活值/可信度；关闭时输出与旧版逐字段一致（不多加字段）
+  const v10cfg = loadV10(dir);
+  if (v10cfg.enabled) {
+    const byId = new Map(source.map((f) => [f.id, f]));
+    for (const r of out) {
+      const f = byId.get(r.id) || r;
+      const a = activationOf(f, { query: q, facts: source, now, cfg: v10cfg });
+      r.activation = Number(a.A.toFixed(1));
+      r.activationParts = Object.fromEntries(Object.entries(a.parts).map(([k, v]) => [k, Number(v.toFixed(1))]));
+      r.q = Number(qValueOf(f, { facts: source }).toFixed(2));
+      r.qLevel = qLevelOf(r.q, v10cfg);
+      r.qLabel = qLabelOf(r.qLevel, v10cfg);
+      r.detail = Number(detailOf(f, v10cfg, now, source).toFixed(2));
+      r.emotion = Number(emotionOf(f, v10cfg, now).toFixed(2));
+      if (!r.fragments || !r.fragments.length) r.fragments = fragmentsOf(f.text, f.value, v10cfg.fragmentsMax);
+    }
+    if (v10cfg.rankInInject) out = out.slice().sort((x, y) => (y.activation || 0) - (x.activation || 0));
+  }
+  const rowsOut = out.slice(0, Math.max(1, Number(limit) || 5));
+  // 只有调用方显式声明「这次要注入/真正用到」时才记账：CLI、MCP、影子对比默认不写。
+  if (recordOpt === true && v10cfg.enabled && v10cfg.recordRetrieved) {
+    recordRetrieved(rowsOut, { dir, now, by: recordBy });
+  }
+  return rowsOut;
+}
+
+function sameLocalDay(a, b) {
+  const x = new Date(a);
+  const y = new Date(b);
+  return x.getFullYear() === y.getFullYear() && x.getMonth() === y.getMonth() && x.getDate() === y.getDate();
+}
+
+/** v10：检索命中记一条 retrieved（同 fact 同一天只记一次）。只记事实、不涨分。 */
+function recordRetrieved(rows, { dir = '', now = Date.now(), by = 'search' } = {}) {
+  for (const r of rows) {
+    if (!r || !r.id) continue;
+    const last = Number(r.lastRetrievedAt) || 0;
+    if (last && sameLocalDay(last, now)) continue;
+    try {
+      lt.appendEvent({ ev: 'retrieved', id: r.id, at: now, by }, dir);
+      r.lastRetrievedAt = now;
+      r.accessCount = (Number(r.accessCount) || 0) + 1;
+    } catch {
+      /* 记不上不影响检索结果 */
+    }
+  }
+}
+
+/** 只给「真正被用到」的调用方：声明这批行确实进了注入（引擎在过滤卡重复之后调用）。 */
+export function markRetrieved(rows, { dir = '', now = Date.now(), by = 'inject' } = {}) {
+  const cfg = loadV10(dir);
+  if (cfg.enabled !== true || cfg.recordRetrieved !== true) return 0;
+  recordRetrieved(rows, { dir, now, by });
+  return 0;
+}
+
+/** CLI/HTTP：一条事实的 v10 解释（计算统一交给 v10.explain）。 */
+export function explainFact(fact, { query = '', facts = [], dir = '', now = Date.now() } = {}) {
+  const cfg = loadV10(dir);
+  const ex = v10Explain(fact, { query, facts, now, cfg });
+  return {
+    activation: ex.activation,
+    parts: ex.parts,
+    q: ex.q,
+    qLevel: ex.qLevel,
+    qLabel: ex.qLabel,
+    detail: ex.detail,
+    emotion: ex.emotion,
+    consolidation: ex.consolidation,
+    interference: ex.interference,
+    fragments: ex.fragments,
+    rendered: ex.rendered,
+    belowFloor: !passesSalience({ activation: ex.activation }, cfg)
+  };
 }

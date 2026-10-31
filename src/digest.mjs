@@ -161,7 +161,7 @@ export async function summarizeHandover({
  * 导出给测试用。
  */
 export function extractProfileFallback({ previousProfile = '', transcript = '', maxChars = 800 } = {}) {
-  const factRe = /(生日|喜欢|讨厌|爱吃|不吃|称呼|叫我|名字|约定|记住|不要|必须|下次|计划|搬家|换工作|考试|工作|上班|口味|忌口|老家|湖北|青岛|每天|每周|养|住|学校|大学|课|报告)/;
+  const factRe = /(生日|喜欢|讨厌|爱吃|不吃|称呼|叫我|名字|约定|记住|不要|必须|下次|计划|搬家|换工作|考试|工作|上班|口味|忌口|老家|外地|每天|每周|养|住|学校|大学|课|报告)/;
   const lines = [];
   for (const line of String(transcript).split(/\n+/)) {
     const m = line.match(/\]\s*([^：:]{1,12})[：:]\s*(.+)$/);

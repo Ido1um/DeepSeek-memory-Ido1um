@@ -37,6 +37,7 @@ import * as lt from './longterm.mjs';
 import * as due from './due.mjs';
 import * as inject from './inject.mjs';
 import * as rules from './rules.mjs';
+import * as v10 from './v10.mjs';
 import { memorySection } from './config.mjs';
 
 const DAY_MS = 86400000;
@@ -359,10 +360,21 @@ export function createMemoryEngine({
       rows = [];
     }
     const seen = String(cardText || '');
-    return rows
+    const cfg10 = v10.loadV10(dataDir());
+    const picked = rows
       .filter((r) => r && r.value && !seen.includes(String(r.value).slice(0, 12)))
-      .slice(0, 4)
-      .map((r) => `· [${r.tier}] ${String(r.value).slice(0, 60)}`);
+      .filter((r) => v10.passesSalience(r, cfg10)) // v10：激活值低于 salienceFloor 的不投递
+      .slice(0, 4);
+    // v10：只把这批真正进注入的条目录进 retrieved（CLI/MCP/影子对比不会走到这里）
+    try {
+      if (picked.length) scoringRun.markRetrieved(picked, { dir: dataDir(), by: 'inject' });
+    } catch {
+      /* 记账失败不影响注入 */
+    }
+    const showVague = cfg10.enabled === true && cfg10.emit === true;
+    return picked.map((r) =>
+      showVague ? v10.renderFact(r, { cfg: cfg10 }) : `· [${r.tier}] ${String(r.value).slice(0, 60)}`
+    );
   }
 
   // ── 注入拼装：事实卡（按会话一次 / 更新后再注入）+ 交接摘要（按 consumedAt 一次） ─

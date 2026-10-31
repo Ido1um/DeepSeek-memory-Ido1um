@@ -1,4 +1,4 @@
-// v9 修复回归：把 2026-10-31 审计里确认的 8 个 bug 钉住，防止改回去。
+﻿// v9 修复回归：把 2026-10-31 审计里确认的 8 个 bug 钉住，防止改回去。
 // 全部离线：临时目录 + 纯函数，不碰生产数据。
 
 import test from 'node:test';
@@ -204,7 +204,7 @@ test('engine：四段注入不再只在注入卡那一轮出现', async (t) => {
   const { createNullHost } = await import('../src/host.mjs');
   const rules = await import('../src/rules.mjs');
   store.noteSession('private:10001', 'session-k', Date.now());
-  store.writeProfile('- 用户喜欢擂饭');
+  store.writeProfile('- 用户喜欢火锅');
   rules.writeRules(process.env.QQ_MEMORY_DIR, '# 规则\n- 叫主公');
 
   const engine = createMemoryEngine({ host: createNullHost() });

@@ -164,6 +164,13 @@ export function materialize(events = readEvents().rows, invalidated = readInvali
         class: ev.class || 'note',
         badHits: 0,
         source: ev.source && typeof ev.source === 'object' ? ev.source : null,
+        // v10：属性与片段（老事件缺字段 → 0/空；不迁移、不写回）
+        emo: Number.isFinite(Number(ev.emo)) ? Number(ev.emo) : 0,
+        rel: Number(ev.rel) || 0,
+        scene: Array.isArray(ev.scene) ? ev.scene : [],
+        fragments: Array.isArray(ev.fragments) ? ev.fragments : [],
+        accessCount: 0,
+        lastRetrievedAt: 0,
         tier: ev.tier === 'hard' ? 'hard' : ev.tier || 'general',
         I: Number.isFinite(Number(ev.I)) ? Number(ev.I) : 0.2,
         s: ev.s != null && Number.isFinite(Number(ev.s)) ? Number(ev.s) : 3,
@@ -221,6 +228,11 @@ export function materialize(events = readEvents().rows, invalidated = readInvali
       cur.updatedAt = toMs(ev.at) || Date.now();
     } else if (ev.ev === 'notified') {
       cur.notifiedAt = toMs(ev.at) || Date.now();
+    } else if (ev.ev === 'retrieved') {
+      // v10：只记「被想起过」，不动 I/S/C/D/R，也不当提及（无自强化）。
+      cur.accessCount = (Number(cur.accessCount) || 0) + 1;
+      cur.lastRetrievedAt = toMs(ev.at) || Date.now();
+      cur.updatedAt = toMs(ev.at) || cur.updatedAt || Date.now();
     } else if (ev.ev === 'supersede') {
       // v8 版本链：同主题的新说法顶掉旧值，但历史留在事件流里（可审计、可回滚）。
       if (ev.value !== undefined) cur.value = ev.value;

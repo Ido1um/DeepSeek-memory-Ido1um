@@ -28,7 +28,7 @@ import { createNullHost } from '../src/host.mjs';
 import { memorySection, ownerQQ, loadConfig } from '../src/config.mjs';
 import { probePort } from '../src/portprobe.mjs';
 import { resolveDataDir, ensureDir } from '../src/paths.mjs';
-import { normalizeScoring, search as searchFacts } from '../src/scoring-runner.mjs';
+import { normalizeScoring, search as searchFacts, explainFact } from '../src/scoring-runner.mjs';
 import { describe } from '../src/score.mjs';
 
 const KEY = `private:${ownerQQ()}`;
@@ -94,17 +94,31 @@ function cmdStatus() {
 
 function cmdRecall({ pos, flags }) {
   const query = flags.all ? '' : pos.join(' ').trim();
+  const dir = resolveDataDir({ configDir: memorySection().dir || '' });
   const rows = searchFacts({
     query,
     limit: Number(flags.limit) || 20,
     scoring: normalizeScoring(memorySection()?.scoring || {}),
-    includeInvalidated: Boolean(flags.invalidated)
+    includeInvalidated: Boolean(flags.invalidated),
+    dir
   });
   if (!rows.length) {
     console.log(query ? `长期库里没有「${query}」的记录。` : '长期库还是空的。');
     return;
   }
   console.log(`命中 ${rows.length} 条${query ? `（关键词「${query}」）` : '（按档位/分数）'}：`);
+  if (flags.explain) {
+    const facts = longterm.materialize(longterm.readEvents(dir).rows, longterm.readInvalidated(dir));
+    for (const f of rows) {
+      const ex = explainFact(f, { query, facts, dir });
+      console.log(fmtFact(f));
+      console.log(`   激活 ${ex.activation}（${Object.entries(ex.parts).map(([k, v]) => `${k} ${v}`).join(' / ')}）`);
+      console.log(`   Q ${ex.q} ${ex.qLevel}「${ex.qLabel}」· D ${ex.detail} · E ${ex.emotion} · C ${ex.consolidation} · 干扰 ${ex.interference}`);
+      if (ex.belowFloor) console.log('   （低于 salienceFloor，不进注入）');
+      if (ex.fragments.length) console.log(`   片段 ${ex.fragments.join('……')}`);
+    }
+    return;
+  }
   for (const f of rows) console.log(fmtFact(f));
 }
 

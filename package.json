@@ -1,6 +1,6 @@
-{
+﻿{
   "name": "deepseek-memory-ido1um",
-  "version": "9.2.0",
+  "version": "9.5.0",
   "private": true,
   "type": "module",
   "description": "给 DeepSeek 机器人做的记忆插件（仅供参考）",
