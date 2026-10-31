@@ -130,3 +130,14 @@ $env:WORKBENCH_PORT='7352'   # 换端口
 - 会话表、长期事实表都用 `<colgroup>` 固定列宽（事实表 `table-layout:fixed`），最大化后列宽按比例走、不会被内容撑歪；
 - `映射异常` 这种附注标签改成数字下面单独一行，不再把数字顶到左边；
 - 截图/审计可直接开面板：`http://127.0.0.1:7351/?panel=sess|card|facts|ctx|tune|score`（默认仍是记忆星图）。
+
+## 写令牌（默认开启）
+
+- 首次启动生成 `workbench/.workbench-token`（48 位十六进制，权限 0600）；可用环境变量 `WORKBENCH_TOKEN` 覆盖，`--no-token` 只用于本地调试。
+- 页面打开时服务端把令牌注入 index.html（同源才读得到响应，跨站读不到），前端所有 POST 自动带 `x-workbench-token`。
+- 写请求三重闸门：Host 必须是回环地址（防 DNS rebinding）→ 同源（`origin` / `sec-fetch-site`）→ `Content-Type: application/json`。不带/带错令牌 401，跨站 403，非 JSON 415。
+- `/api/state` **不下发**任何令牌；点「控制台」时走 `POST /api/console-url` 现取。
+
+## apply 前的目录体检
+
+`POST /api/apply` 先看目标目录：空目录放行（全新安装），已有 `profile.md`/`state/`/`rules.md`/`raw/` 放行；明显不是记忆目录（非空且没有这些）返回 400，确认后加 `{"force": true}` 才强制；磁盘根目录直接拒。写之前仍会备份桥接 config 到 `workbench/backup/`。

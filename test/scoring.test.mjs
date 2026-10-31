@@ -211,3 +211,9 @@ test('观测日志：每条入站一行 logs/scoring.log，含候选/写入数',
   assert.equal(lines[1].mode, 'write');
   assert.ok(lines[1].ids.length >= 1);
 });
+
+test('search：limit<=0 返回空数组，不静默回退默认条数', () => {
+  const cfg = { mode: 'write' };
+  assert.deepEqual(run.search({ query: '生日', limit: 0, scoring: cfg, facts: [] }), []);
+  assert.deepEqual(run.search({ query: '生日', limit: -5, scoring: cfg, facts: [] }), []);
+});

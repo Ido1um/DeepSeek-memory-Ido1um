@@ -12,6 +12,7 @@
 import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
+import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { describe, normalizeConfig as normalizeScoring } from '../src/score.mjs';
 import { resolveDataDir, DEFAULT_DATA_DIR } from '../src/paths.mjs';
@@ -20,13 +21,30 @@ import * as cardMod from '../src/card.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const PUBLIC = path.join(HERE, 'public');
-const DESIRED_FILE = path.join(HERE, 'config.json');
+// 测试/多实例时可用 WORKBENCH_DESIRED 指向临时目标配置
+const DESIRED_FILE = process.env.WORKBENCH_DESIRED || path.join(HERE, 'config.json');
 // 可选：想看「线上配置」时，把宿主 config.json 的路径塞进 env；没有就只看本地
 const BRIDGE_CFG = process.env.WORKBENCH_BRIDGE_CFG || '';
 const BRIDGE_LOG = process.env.WORKBENCH_BRIDGE_LOG || '';
 const DEFAULT_DATA = DEFAULT_DATA_DIR;
-// 可选：设了就要求写操作带 x-workbench-token（GET 不受影响）
-const WORKBENCH_TOKEN = String(process.env.WORKBENCH_TOKEN || '').trim();
+// 写操作一律要令牌：优先环境变量，其次 workbench/.workbench-token（首次自动生成）；
+// 只有显式 --no-token 才关闭（只用于本地调试，启动日志会警告）。
+const TOKEN_FILE = path.join(HERE, '.workbench-token');
+const NO_TOKEN = process.argv.includes('--no-token');
+function loadToken() {
+  const env = String(process.env.WORKBENCH_TOKEN || '').trim();
+  if (env) return env;
+  try {
+    const cur = fs.readFileSync(TOKEN_FILE, 'utf8').trim();
+    if (cur) return cur;
+  } catch {}
+  const made = crypto.randomBytes(24).toString('hex');
+  try { fs.writeFileSync(TOKEN_FILE, made + '\n', { encoding: 'utf8', mode: 0o600 }); } catch (e) {
+    console.warn('[工作台] 令牌文件写不了，本次用内存令牌：' + e.message);
+  }
+  return made;
+}
+const WORKBENCH_TOKEN = NO_TOKEN ? '' : loadToken();
 const dataDirOf = (memDir = '') => resolveDataDir({ explicit: memDir });
 
 const PORT_ARG = process.argv.indexOf('--port');
@@ -149,7 +167,16 @@ function consoleInfo() {
   if (!token) {
     try { token = fs.readFileSync(path.join(path.dirname(BRIDGE_CFG), 'state', 'console-token'), 'utf8').trim(); } catch {}
   }
-  return { port, hasToken: !!token, url: `http://127.0.0.1:${port}/${token ? '?token=' + encodeURIComponent(token) : ''}` };
+  // 令牌只在 consoleUrl() 里现拼，/api/state 一律不带
+  consoleInfo.token = token;
+  return { port, hasToken: !!token };
+}
+
+function consoleUrl() {
+  const info = consoleInfo();
+  const token = String(consoleInfo.token || '');
+  const path = token ? '/?token=' + encodeURIComponent(token) : '/';
+  return { url: 'http://127.0.0.1:' + info.port + path, hasToken: info.hasToken };
 }
 
 function sessionTokens(sid, key) {
@@ -454,24 +481,53 @@ function loadDesired() {
 function saveDesired(patch) {
   const cur = loadDesired();
   for (const [k, v] of Object.entries(patch || {})) {
-    if (!(k in DEFAULT_DESIRED)) continue;
+    if (!(k in DEFAULT_DESIRED)) throw Object.assign(new Error('未知配置项：' + k), { status: 400 });
     if (k === 'dir') {
       const d = normDir(v);
-      if (!isAbsWinPath(d)) throw Object.assign(new Error('数据目录必须是绝对路径，例如 '), { status: 400 });
+      if (!isAbsWinPath(d)) throw Object.assign(new Error('数据目录必须是绝对路径'), { status: 400 });
+      let stat = null;
+      try { stat = fs.statSync(d); } catch {}
+      if (!stat || !stat.isDirectory()) throw Object.assign(new Error('数据目录不存在：' + d + '（先点「创建目录」）'), { status: 400 });
       cur.dir = d; continue;
     }
     if (k === 'scoring') { cur.scoring = mergeScoring({ ...cur.scoring, ...(v || {}) }); continue; }
     if (k === 'policies') { cur.policies = mergePolicies(v); continue; }
-    cur[k] = typeof DEFAULT_DESIRED[k] === 'boolean' ? Boolean(v)
-      : typeof DEFAULT_DESIRED[k] === 'number' ? Number(v) : String(v);
+    if (typeof DEFAULT_DESIRED[k] === 'boolean') {
+      if (typeof v !== 'boolean') throw Object.assign(new Error(k + ' 只接受 true/false'), { status: 400 });
+      cur[k] = v; continue;
+    }
+    if (typeof DEFAULT_DESIRED[k] === 'number') {
+      const num = Number(v);
+      if (!Number.isFinite(num)) throw Object.assign(new Error(k + ' 必须是数字'), { status: 400 });
+      if (num < 0) throw Object.assign(new Error(k + ' 不能为负'), { status: 400 });
+      cur[k] = num; continue;
+    }
+    cur[k] = String(v);
   }
   writeJson(DESIRED_FILE, cur);
   return cur;
 }
 
-function applyToBridge() {
+// 记忆目录体检：空目录可以，已有 profile.md/state/ 也可以；明显不是就拒（除非 force）
+function assertMemoryDir(dir, { force = false } = {}) {
+  if (!isAbsWinPath(dir)) throw Object.assign(new Error('数据目录必须是绝对路径'), { status: 400 });
+  let st = null;
+  try { st = fs.statSync(dir); } catch {}
+  if (!st || !st.isDirectory()) throw Object.assign(new Error('数据目录不存在：' + dir), { status: 400 });
+  if (force) return;
+  let entries = [];
+  try { entries = fs.readdirSync(dir); } catch (e) { throw Object.assign(new Error('目录读不了：' + e.message), { status: 400 }); }
+  if (path.dirname(dir) === dir) throw Object.assign(new Error('不能把磁盘根目录当记忆目录'), { status: 400 });
+  const looks = entries.includes('profile.md') || entries.includes('state') || entries.includes('rules.md') || entries.includes('raw');
+  if (!looks && entries.length > 0) {
+    throw Object.assign(new Error('这个目录不像记忆目录（缺 profile.md / state/，且不为空）。确认后可用 force:true 强制应用'), { status: 400 });
+  }
+}
+
+function applyToBridge(body = {}) {
   const cfg = readJson(BRIDGE_CFG, null);
   if (!cfg) throw new Error('读不到桥接 config.json');
+  assertMemoryDir(loadDesired().dir || (cfg.memory && cfg.memory.dir) || DEFAULT_DATA, { force: body.force === true });
   const dir = path.join(HERE, 'backup');
   fs.mkdirSync(dir, { recursive: true });
   const stamp = new Date().toISOString().replace(/[:.]/g, '-');
@@ -515,9 +571,16 @@ function cardPreview(query) {
 
 const TIER_HALF_LIFE = { long: 30, general: 3, temp: 1.5 };
 
+const FACT_OPS = ['invalidate', 'reinstate', 'manual', 'reset', 'badhit'];
+
 function factOp({ id, op, reason, tier, score }) {
   const dataDir = loadBridgeMemory().mem.dir || DEFAULT_DATA;
   if (!id) throw Object.assign(new Error('缺少 id'), { status: 400 });
+  if (!FACT_OPS.includes(op)) throw Object.assign(new Error('op 只能是 ' + FACT_OPS.join('/')), { status: 400 });
+  {
+    const known = longterm.materialize(longterm.readEvents(dataDir).rows, longterm.readInvalidated(dataDir));
+    if (!known.some((f) => f.id === id)) throw Object.assign(new Error('没有这条事实：' + id), { status: 404 });
+  }
   // 事件 at 必须是毫秒数（和引擎一致）：引擎用 Number(ev.at) 读，ISO 字符串会变 NaN，
   // 导致 lastAt 每次被打回「现在」→ 被人工调过的条目永不衰减。审计日志仍用 ISO 方便人看。
   const at = Date.now();
@@ -562,7 +625,8 @@ function factOp({ id, op, reason, tier, score }) {
 const routes = {
   'GET /api/state': () => buildState(),
   'POST /api/config': (body) => ({ desired: saveDesired(body), savedAt: Date.now() }),
-  'POST /api/apply': () => applyToBridge(),
+  'POST /api/apply': (body) => applyToBridge(body || {}),
+  'POST /api/console-url': () => consoleUrl(),
   'POST /api/fact': (body) => factOp(body || {}),
   'POST /api/checkdir': (body) => checkDir(body || {}),
   'GET /api/card': (body, query) => cardPreview(query),
@@ -577,8 +641,29 @@ const send = (res, code, body, type = 'application/json; charset=utf-8') => {
 
 const server = http.createServer((req, res) => {
   const url = new URL(req.url, 'http://127.0.0.1');
+  if (req.method !== 'GET') {
+    // Host 必须是本机：否则改个 hosts 把 evil.com 指到 127.0.0.1 就能伪装同源（DNS rebinding）
+    const host = String(req.headers.host || '').toLowerCase();
+    const hostOk = host === '127.0.0.1:' + PORT || host === 'localhost:' + PORT || host === '[::1]:' + PORT;
+    if (!hostOk) return send(res, 403, { error: 'Host 不被接受（只允许本机回环地址）' });
+    const origin = String(req.headers.origin || '');
+    const site = String(req.headers['sec-fetch-site'] || '');
+    const allowed = origin === '' || origin === 'http://127.0.0.1:' + PORT || origin === 'http://localhost:' + PORT;
+    if (!allowed || site === 'cross-site') return send(res, 403, { error: '跨站写请求被拒绝' });
+    // 只收 JSON：杜绝表单类 CSRF（那类不带预检）
+    const ctype = String(req.headers['content-type'] || '').toLowerCase();
+    if (!ctype.includes('application/json')) return send(res, 415, { error: '写请求必须是 application/json' });
+    const got = String(req.headers['x-workbench-token'] || url.searchParams.get('token') || '');
+    if (!WORKBENCH_TOKEN) return send(res, 500, { error: '工作台没拿到写令牌（检查 .workbench-token 或 WORKBENCH_TOKEN）' });
+    if (got !== WORKBENCH_TOKEN) return send(res, 401, { error: '缺少或错误的 x-workbench-token' });
+  }
+
   if (req.method === 'GET' && (url.pathname === '/' || url.pathname === '/index.html')) {
-    try { return send(res, 200, fs.readFileSync(path.join(PUBLIC, 'index.html')), 'text/html; charset=utf-8'); }
+    try {
+      const html = fs.readFileSync(path.join(PUBLIC, 'index.html'), 'utf8')
+        .replace('</head>', '<script>window.__WB_TOKEN__ = ' + JSON.stringify(WORKBENCH_TOKEN) + ';</script></head>');
+      return send(res, 200, html, 'text/html; charset=utf-8');
+    }
     catch { return send(res, 500, { error: 'index.html 缺失' }); }
   }
   // /assets/* → public 下的静态文件（只放行前端资源扩展名，防目录穿越）
@@ -594,14 +679,6 @@ const server = http.createServer((req, res) => {
       return send(res, 200, fs.readFileSync(full), type);
     }
     return send(res, 404, { error: 'asset not found' });
-  }
-  if (req.method !== 'GET' && WORKBENCH_TOKEN) {
-    const got = String(req.headers['x-workbench-token'] || url.searchParams.get('token') || '');
-    if (got !== WORKBENCH_TOKEN) return send(res, 401, { error: '缺少或错误的 x-workbench-token' });
-  }
-  if (req.method !== 'GET' && WORKBENCH_TOKEN) {
-    const got = String(req.headers['x-workbench-token'] || url.searchParams.get('token') || '');
-    if (got !== WORKBENCH_TOKEN) return send(res, 401, { error: '缺少或错误的 x-workbench-token' });
   }
   const key = `${req.method} ${url.pathname}`;
   const handler = routes[key];

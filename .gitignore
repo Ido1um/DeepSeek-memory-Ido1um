@@ -27,3 +27,5 @@ _private/
 .idea/
 .DS_Store
 Thumbs.db
+# 工作台写令牌（本机生成，绝不入库）
+workbench/.workbench-token

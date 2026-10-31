@@ -596,7 +596,9 @@ function toast(msg) {
 }
 
 async function api(path, body) {
-  const r = await fetch(path, body ? { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) } : {});
+  const headers = { 'content-type': 'application/json' };
+  if (body && window.__WB_TOKEN__) headers['x-workbench-token'] = window.__WB_TOKEN__;
+  const r = await fetch(path, body ? { method: 'POST', headers, body: JSON.stringify(body) } : {});
   const j = await r.json().catch(() => ({}));
   if (!r.ok) throw new Error(j.error || ('HTTP ' + r.status));
   return j;
@@ -834,10 +836,13 @@ function useDefaultDir() {
   $('dirInput').value = (STATE && STATE.defaultMemoryDir) || DEFAULT_DIR;
   toast('已填入默认路径，记得先测试再保存');
 }
-function openConsole() {
-  const u = STATE && STATE.console && STATE.console.url;
-  if (!u) return toast('读不到控制台地址（桥接没在跑？）');
-  window.open(u, '_blank', 'noopener');
+async function openConsole() {
+  try {
+    // 令牌不再跟着 /api/state 下发，点的时候才现取（同一个同源校验）
+    const r = await api('/api/console-url', {});
+    if (!r || !r.url) return toast('读不到控制台地址（桥接没在跑？）');
+    window.open(r.url, '_blank', 'noopener');
+  } catch (e) { toast('读不到控制台地址：' + e.message); }
 }
 
 /* ---- 记忆方案 ---- */

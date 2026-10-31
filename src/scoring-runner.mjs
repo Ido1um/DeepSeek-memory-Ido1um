@@ -315,6 +315,9 @@ export function settle({ now = Date.now(), scoring, dir = '' } = {}) {
  */
 export function search({ query = '', limit = 5, now = Date.now(), scoring, includeInvalidated = false, facts: provided, dir = '', includeHistory = false } = {}) {
   const cfg = normalizeScoring(scoring);
+  // limit<=0 表示“不要结果”，而不是悄悄回退成默认条数
+  const want = Number(limit);
+  if (Number.isFinite(want) && want <= 0) return [];
   const q = String(query ?? '').trim();
   const eventsIn = cfg.mode === 'shadow'
     ? [...lt.readEvents(dir).rows, ...lt.readShadow(0, dir).rows]

@@ -1,5 +1,18 @@
 # CHANGELOG
 
+## 2026-10-31 — v9.4：工作台写接口收紧（令牌 / 来源 / 目录体检）
+
+> 写接口从「可选令牌」改成默认强校验，并把 apply 前的目录检查补齐。只动工作台与一处检索语义，数据格式不变。
+
+- **写令牌默认开启**：首次启动生成 `workbench/.workbench-token`（48 位十六进制，0600），服务端注入页面、前端 POST 自动带 `x-workbench-token`；可用 `WORKBENCH_TOKEN` 覆盖，`--no-token` 仅供本地调试。
+- **三重闸门**：写请求必须 ① Host 是回环地址（挡 DNS rebinding）② 同源（`origin`/`sec-fetch-site`）③ `Content-Type: application/json`（挡表单 CSRF）。缺令牌 401、跨站 403、错 Host 403、非 JSON 415。
+- **`/api/state` 不再下发控制台令牌**：只回 `{port, hasToken}`；点「控制台」时走 `POST /api/console-url` 现取。
+- **`/api/config` 校验**：目录必须已存在（先点「创建目录」）、未知键 400、数字/布尔类型错 400（之前 `windowDays:"abc"` 会存成 null）。
+- **`/api/fact` 校验**：op 白名单 `invalidate/reinstate/manual/reset/badhit`；id 必须真实存在，否则 404，不写墓碑也不写审计。
+- **apply 前目录体检**：空目录或含 `profile.md`/`state`/`rules.md`/`raw` 才放行；明显不是记忆目录 400（`force:true` 可覆盖）；磁盘根目录直接拒。
+- **检索**：`search({limit:0})` 现在返回空数组，不再静默回退默认条数。
+- **测试**：新增 `test/workbench-api.test.mjs`（临时目录 + 随机端口真起服务），覆盖令牌/Host/Content-Type/目录体检/幽灵 id；本地全套 158。
+
 ## 2026-10-31 — v9.3：摘要兜底修一个真 bug
 
 - **模型不可用时的提取式兜底会丢旧卡**：旧卡 bullet 是「· 」开头（`card.mjs` 的写法），而兜底只认 `[-*]` 前缀，导致模型失败时旧卡内容被静默丢弃。现在同时认 `·` 并归一成 `- `。
