@@ -145,19 +145,35 @@ export function detectSignals(text = '') {
 const ATTRIBUTE_PATTERNS = new Set(['birthday', 'name', 'nickname', 'residence', 'job']);
 const LABEL_TO_KEY = { 生日: 'birthday', 名字: 'name', 称呼: 'nickname', 住处: 'residence', 工作: 'job' };
 
+/** 自指主语：这类主语不带进 sig/topic（保持老数据 `user:生日` 不变，免迁移）。 */
+const SELF_SUBJECTS = new Set(['我', '咱', '俺', '主人', '你']);
+
+/**
+ * 主语槽（v8 修订）：只有「我妈 / 我爸 / 我家」这类非自指主语才进 sig/topic。
+ * 不加这一层时「我妈生日」和「我生日」会落到同一个 `user:生日` 上，
+ * 后一句会被当成前一句的「提及」，值被静默吞掉。
+ */
+export function subjectTag(subject = '') {
+  const s = String(subject || '').trim();
+  if (!s || SELF_SUBJECTS.has(s)) return '';
+  return s;
+}
+
 /**
  * 主题键（v8 §3）：只有「固定属性」才归一成稳定主题，别的内容按 sig 独立。
  * 关键作用：改生日时新旧两条落在同一主题上，能由 supersede 顶掉旧值。
  * @param {string} _text 原始消息（保留给未来按内容推断主题）
- * @param {{about?:string, pattern?:string, sig?:string}} fact
- * @returns {string} 形如 `user:birthday` / `user:note:5ap6qt`
+ * @param {{about?:string, subject?:string, pattern?:string, sig?:string}} fact
+ * @returns {string} 形如 `user:birthday` / `user:我妈:birthday` / `user:note:5ap6qt`
  */
 export function topicOf(_text = '', fact = {}) {
   const about = fact.about || 'user';
+  const tag = subjectTag(fact.subject);
+  const prefix = tag ? `${about}:${tag}` : about;
   const pattern = fact.pattern || 'note';
   const key = LABEL_TO_KEY[pattern] || pattern;
-  if (ATTRIBUTE_PATTERNS.has(key)) return `${about}:${key}`;
-  return fact.sig || `${about}:${pattern}`;
+  if (ATTRIBUTE_PATTERNS.has(key)) return `${prefix}:${key}`;
+  return fact.sig || `${prefix}:${pattern}`;
 }
 
 // v8 §2 记忆分类：决定衰减规则与是否进卡（不是语义分类，只看「这句话是什么性质」）

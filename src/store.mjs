@@ -186,7 +186,9 @@ function getState() {
   const now = Date.now();
   const file = dirs().stateFile;
   // 目录也算缓存键：测试用 QQ_MEMORY_DIR 切目录时不能读到上一个目录的缓存状态。
-  if (!stateCache || stateCacheFile !== file || now - stateCacheAt > 1500) {
+  // 脏的时候绝不重载：saveStateSoon 去抖 2s、缓存 TTL 1.5s，若这时重载会用磁盘旧值
+  // 覆盖刚改的内存（丢会话映射/丢注入标记），而且定时器之后还会把旧值写回去。
+  if (!stateCache || stateCacheFile !== file || (!stateDirty && now - stateCacheAt > 1500)) {
     stateCache = readState();
     stateCacheAt = now;
     stateCacheFile = file;

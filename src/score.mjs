@@ -26,6 +26,7 @@ export const SCORING_DEFAULTS = Object.freeze({
   demoteLongFloor: 40, // 降级不归零：S 保留到 floor 天
   generalToTemp: 30, // 一般分数 <30 → 临时
   tempTtlDays: 7, // 临时 7 天没提 → 软删
+  taskTtlDays: 7, // 待办截止后 7 天还没结掉 → 软删（不再提醒、不占卡；事件流仍在）
 
   negativePenalty: 0.3, // 每被否定一次 I −0.3
   suspectAt: 2, // 被否定 2 次标记 suspect
@@ -39,10 +40,36 @@ export const MINUTE = 60 * SECOND;
 export const HOUR = 60 * MINUTE;
 export const DAY = 24 * HOUR;
 
+/** 扁平别名 → 嵌套键（老配置与工作台面板用的是 halfLifeLong 这种写法，必须仍然生效）。 */
+const FLAT_HALF = { halfLifeLong: 'long', halfLifeGeneral: 'general', halfLifeTemp: 'temp' };
+const pos = (v) => (Number.isFinite(+v) && +v > 0 ? +v : undefined);
+
+function withFlatAliases(patch = {}) {
+  const p = { ...(patch || {}) };
+  const flat = {};
+  for (const [k, t] of Object.entries(FLAT_HALF)) {
+    if (p[k] != null && pos(p[k]) !== undefined) flat[t] = pos(p[k]);
+    delete p[k];
+  }
+  if (Object.keys(flat).length) p.halfLifeDays = { ...(p.halfLifeDays || {}), ...flat };
+  const pr = { ...(p.promote || {}) };
+  if (pos(p.promoteHits) !== undefined) pr.hits = pos(p.promoteHits);
+  if (pos(p.promoteScore) !== undefined) pr.score = pos(p.promoteScore);
+  delete p.promoteHits;
+  delete p.promoteScore;
+  if (p.demoteFloor != null) {
+    p.demoteLongFloor = pos(p.demoteFloor) ?? p.demoteLongFloor;
+    delete p.demoteFloor;
+  }
+  if (Object.keys(pr).length) p.promote = pr;
+  return p;
+}
+
 /** 合并配置：只认认识的键，数值非法时回落默认。 */
 export function normalizeConfig(patch = {}) {
+  const src = withFlatAliases(patch);
   const c = { ...SCORING_DEFAULTS, halfLifeDays: { ...SCORING_DEFAULTS.halfLifeDays } };
-  for (const [k, v] of Object.entries(patch || {})) {
+  for (const [k, v] of Object.entries(src || {})) {
     if (v == null) continue;
     if (k === 'halfLifeDays' && typeof v === 'object') {
       for (const [t, d] of Object.entries(v)) if (Number.isFinite(+d) && +d > 0) c.halfLifeDays[t] = +d;
@@ -55,6 +82,21 @@ export function normalizeConfig(patch = {}) {
     }
   }
   return c;
+}
+
+/** 没被识别、会被丢弃的配置键（CLI / doctor 用来提示拼写错误）。 */
+export function unknownScoringKeys(patch = {}) {
+  const known = new Set([
+    ...Object.keys(SCORING_DEFAULTS),
+    ...Object.keys(FLAT_HALF),
+    'promoteHits',
+    'promoteScore',
+    'demoteFloor',
+    // mode / versioning 是 memory.scoring 的合法开关，但不由数值合并读取
+    'mode',
+    'versioning'
+  ]);
+  return Object.keys(withFlatAliases(patch)).filter((k) => !known.has(k));
 }
 
 const clamp01 = (x) => Math.min(1, Math.max(0, x));
@@ -167,6 +209,12 @@ export function nextReviewAt(fact = {}, cfg = SCORING_DEFAULTS) {
 /** 档位迁移：先看升档，再看降档/过期。 */
 export function tierAfter(fact = {}, now = Date.now(), cfg = SCORING_DEFAULTS) {
   if (fact.tier === 'hard') return 'hard';
+  // 待办（class=task）：截止日过去 taskTtlDays 天还没结掉 → 软删。
+  // 不软删的话 task 类 stability 是 Infinity，会永远 active、永远进「进行中」，过期提醒又不会发。
+  if (fact.task) {
+    const dueAt = Number(fact.dueAt) || 0;
+    if (dueAt && now > dueAt + (Number(cfg.taskTtlDays) || 7) * DAY) return 'expired';
+  }
   const score = scoreOf(fact, now, cfg);
   const hits = fact.hits ?? 0;
   const days = daysSince(fact.lastHitAt ?? fact.lastAt ?? fact.since, now);

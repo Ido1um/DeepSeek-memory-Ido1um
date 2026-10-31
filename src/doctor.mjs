@@ -1,4 +1,4 @@
-﻿// 自检（doctor）：v7 §10 步 0 的四项内容校验 + 窗口/策略/卡片状态。
+// 自检（doctor）：v7 §10 步 0 的四项内容校验 + 窗口/策略/卡片状态。
 //
 // 设计原则：只报告，不自动修。任何一项 ✗ 都说明数据可能坏了，先人工看。
 
@@ -9,6 +9,7 @@ import * as card from './card.mjs';
 import * as policy from './policy.mjs';
 import * as token from './token.mjs';
 import { paths, readInvalidated, readJsonl, readShadow, readShadowStats } from './longterm.mjs';
+import { unknownScoringKeys } from './score.mjs';
 
 function check(name, ok, detail = '') {
   return { name, ok: Boolean(ok), detail: String(detail || '') };
@@ -96,10 +97,15 @@ export function checkDataDir(dir, { config = {}, modelWindow = 0 } = {}) {
 
   // 5) 策略与墓碑
   const st = policy.readPolicyState(dir);
-  const states = policy.listStates(['private:10001'], { config: config.policy || {}, state: st });
+  const ownerKey = `private:${config.ownerQQ || '10001'}`;
+  const states = policy.listStates([ownerKey], { config: config.policy || {}, state: st });
   checks.push(check('会话策略可解析', states.length > 0, states.map((s) => `${s.key}=${s.state}`).join(', ')));
-  const tombstones = Object.keys(readInvalidated()).length;
-  checks.push(check('作废墓碑可读', true, `${tombstones} 条`));
+  const tombIds = Object.keys(readInvalidated(dir));
+  // 墓碑必须能找到原文：找不到就是孤儿墓碑（sidecar 被手改坏 / 事件被截断）。
+  const orphans = tombIds.filter((id) => !ids.has(String(id)));
+  checks.push(check('作废墓碑可读', orphans.length === 0, `${tombIds.length} 条${orphans.length ? `，${orphans.length} 条没有原文` : ''}`));
+  const unknownKeys = unknownScoringKeys(config.scoring || {});
+  checks.push(check('打分配置无未知键', unknownKeys.length === 0, unknownKeys.length ? unknownKeys.join(', ') : 'ok'));
 
   const shadowStats = readShadowStats();
   const failed = checks.filter((c) => !c.ok);
@@ -111,7 +117,7 @@ export function checkDataDir(dir, { config = {}, modelWindow = 0 } = {}) {
     card: { chars: cardText.length, backups: backups.length, keep: cfg.backupKeep },
     window: win,
     policy: states,
-    invalidated: tombstones,
+    invalidated: tombIds.length,
     shadow: { rows: readShadow().rows.length, stats: shadowStats }
   };
 }

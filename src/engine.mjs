@@ -62,7 +62,8 @@ const DEFAULTS = {
     reinjectAfterAgeMs: 3 * DAY_MS
   },
   policy: { enabled: true, defaultRecord: true, defaultInject: true, allowKeys: [], denyKeys: [], pauseDefaultHours: 2, maxPauseHours: 168 },
-  reminders: { enabled: true, horizonHours: 24, graceHours: 12 },
+  // overdueHours：过了截止还留多久提醒（0=老行为，过点即静默）
+  reminders: { enabled: true, horizonHours: 24, graceHours: 12, overdueHours: 72 },
   // v8 批 3：四段注入预算（默认关，先影子对比再开）
   inject: inject.normalizeInject({})
 };
@@ -97,7 +98,8 @@ function normalizeConfig(raw) {
     reminders: {
       enabled: !(c.reminders && c.reminders.enabled === false),
       horizonHours: num(c.reminders?.horizonHours, DEFAULTS.reminders.horizonHours, 1, 168),
-      graceHours: num(c.reminders?.graceHours, DEFAULTS.reminders.graceHours, 0, 168)
+      graceHours: num(c.reminders?.graceHours, DEFAULTS.reminders.graceHours, 0, 168),
+      overdueHours: num(c.reminders?.overdueHours, DEFAULTS.reminders.overdueHours, 0, 720)
     },
     // 打分：mode 默认 shadow（只采样不写入），改成 write 才动 longterm.jsonl。
     scoring: scoringRun.normalizeScoring(c.scoring),
@@ -408,13 +410,15 @@ export function createMemoryEngine({
       }
     }
     let injected = null;
-    if (inj && cardForBudget) {
-      // 四段装配：规则（手写）> 卡 > 待办 > 相关记忆，总预算 2500 字
+    if (inj) {
+      // 四段装配：规则（手写）> 卡 > 待办 > 相关记忆，总预算 2500 字。
+      // 只有「本轮该注入事实卡」时 cardForBudget 才非空，但规则/待办/检索必须每轮装配，
+      // 否则长会话从第二轮起就只剩原话，检索与待办等于不存在。
       const rulesSec = rules.rulesSection(dataDir(), inj.budget.rules);
       injected = inject.assemble(
         {
           rulesText: rulesSec.text,
-          cardText: cardForBudget,
+          cardText: cardForBudget || '',
           taskLines: taskLines(),
           retrievalLines: retrievalLines(promptText, cardForBudget)
         },
@@ -563,6 +567,8 @@ export function createMemoryEngine({
       const win = {
         horizonMs: (c.reminders?.horizonHours ?? 24) * 3600e3,
         graceMs: (c.reminders?.graceHours ?? 12) * 3600e3,
+        // 逾期窗口：过点后仍提醒一段时间（默认 72h），否则当天已过点的事项永远静默。
+        overdueMs: (c.reminders?.overdueHours ?? 72) * 3600e3,
         ...opts
       };
       return facts.filter((f) => due.reminderWindow(f, now, win)).map((f) => ({

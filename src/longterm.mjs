@@ -41,6 +41,19 @@ export function paths(dir = '') {
   };
 }
 
+/**
+ * 事件时间统一成毫秒数：引擎写数字 epoch，工作台历史上写过 ISO 字符串。
+ * 直接 Number("2026-10-30T…") = NaN，会让 lastAt 被重置成「现在」→ 永不衰减。
+ */
+export function toMs(v) {
+  if (typeof v === 'number') return Number.isFinite(v) ? v : 0;
+  if (typeof v === 'string' && v) {
+    const n = Date.parse(v);
+    return Number.isFinite(n) ? n : 0;
+  }
+  return 0;
+}
+
 export function newId(prefix = 'h') {
   const d = new Date();
   const day = `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, '0')}${String(d.getDate()).padStart(2, '0')}`;
@@ -152,12 +165,14 @@ export function materialize(events = readEvents().rows, invalidated = readInvali
         source: ev.source && typeof ev.source === 'object' ? ev.source : null,
         tier: ev.tier === 'hard' ? 'hard' : ev.tier || 'general',
         I: Number.isFinite(Number(ev.I)) ? Number(ev.I) : 0.2,
-        s: Number.isFinite(Number(ev.s)) ? Number(ev.s) : 3,
-        hits: 1,
+        s: ev.s != null && Number.isFinite(Number(ev.s)) ? Number(ev.s) : 3,
+        hits: Number.isFinite(Number(ev.hits)) ? Number(ev.hits) : 1,
         manual: false,
         autoI: null,
-        lastAt: Number(ev.lastAt) || Number(ev.at) || Date.now(),
-        createdAt: Number(ev.at) || Number(ev.lastAt) || Date.now(),
+        autoS: null,
+        updatedAt: 0,
+        lastAt: toMs(ev.lastAt) || toMs(ev.at) || Date.now(),
+        createdAt: toMs(ev.at) || toMs(ev.lastAt) || Date.now(),
         task: Boolean(ev.task),
         due: ev.due || '',
         dueAt: Number(ev.dueAt) || 0,
@@ -173,61 +188,75 @@ export function materialize(events = readEvents().rows, invalidated = readInvali
     if (!cur) continue;
     if (ev.ev === 'mention') {
       cur.hits = Math.max(cur.hits, Number(ev.hits) || cur.hits + 1);
-      if (Number.isFinite(Number(ev.s))) cur.s = Number(ev.s);
+      if (ev.s != null && Number.isFinite(Number(ev.s))) cur.s = Number(ev.s);
       if (Number.isFinite(Number(ev.I))) cur.I = Number(ev.I);
-      cur.lastAt = Number(ev.at) || cur.lastAt;
+      cur.lastAt = toMs(ev.at) || cur.lastAt;
       if (cur.status === 'expired') cur.status = 'active';
     } else if (ev.ev === 'tier') {
+      // 升降档是「打分结算」不是「又被提了一次」：不能动 lastAt，否则一降档就回春，
+      // daysSinceHit 归零、分数反弹，长期记忆永远沉不下去。
       if (ev.tier) cur.tier = ev.tier;
-      if (Number.isFinite(Number(ev.s))) cur.s = Number(ev.s);
-      cur.lastAt = Number(ev.at) || cur.lastAt;
+      if (ev.s != null && Number.isFinite(Number(ev.s))) cur.s = Number(ev.s);
+      cur.updatedAt = toMs(ev.at) || Date.now();
       if (cur.status === 'expired' && ev.tier !== 'temp') cur.status = 'active';
     } else if (ev.ev === 'expire') {
       cur.status = 'expired';
+      cur.updatedAt = toMs(ev.at) || Date.now();
     } else if (ev.ev === 'invalidate') {
       cur.status = 'invalidated';
+      cur.updatedAt = toMs(ev.at) || Date.now();
     } else if (ev.ev === 'reinstate') {
       cur.status = 'active';
+      cur.updatedAt = toMs(ev.at) || Date.now();
     } else if (ev.ev === 'update') {
       // 补正类事件：只改指定字段（用于给已存在的记忆补 due / 标记事项）。
+      const dueBefore = `${cur.dueAt}|${cur.due}`;
       if (ev.due) cur.due = ev.due;
       if (Number(ev.dueAt)) cur.dueAt = Number(ev.dueAt);
       if (typeof ev.task === 'boolean') cur.task = ev.task;
       if (ev.duePhrase) cur.duePhrase = ev.duePhrase;
+      // 改期后旧的「已提醒」标记必须失效，否则新日期永远不提醒。
+      if (`${cur.dueAt}|${cur.due}` !== dueBefore) cur.notifiedAt = 0;
+      cur.updatedAt = toMs(ev.at) || Date.now();
     } else if (ev.ev === 'notified') {
-      cur.notifiedAt = Number(ev.at) || Date.now();
+      cur.notifiedAt = toMs(ev.at) || Date.now();
     } else if (ev.ev === 'supersede') {
       // v8 版本链：同主题的新说法顶掉旧值，但历史留在事件流里（可审计、可回滚）。
       if (ev.value !== undefined) cur.value = ev.value;
       if (ev.quote) cur.quote = ev.quote;
       if (ev.source && typeof ev.source === 'object') cur.source = ev.source;
       cur.versions = (Number(cur.versions) || 1) + 1;
-      cur.supersededAt = Number(ev.at) || Date.now();
-      cur.lastAt = Number(ev.at) || cur.lastAt;
+      cur.supersededAt = toMs(ev.at) || Date.now();
+      cur.lastAt = toMs(ev.at) || cur.lastAt;
       if (cur.status === 'expired') cur.status = 'active';
     } else if (ev.ev === 'badHit') {
       // v8 反自强化：召回后被判无关 → 记一笔，累计 2 次检索降权（不删）。
       cur.badHits = (Number(cur.badHits) || 0) + 1;
-      cur.lastBadAt = Number(ev.at) || Date.now();
+      cur.lastBadAt = toMs(ev.at) || Date.now();
     } else if (ev.ev === 'manual') {
       // 人工调档/调分：给目标档位与目标分数，换算成 I（=目标/100）并重置为「现在」；
       // 之后仍按该档的正常规则衰减 —— 人工只是拉一下，不是冻住。
       if (ev.tier) cur.tier = ev.tier;
       const target = Number(ev.score);
       if (Number.isFinite(target)) {
-        if (!cur.manual) cur.autoI = cur.I;
+        if (!cur.manual) { cur.autoI = cur.I; cur.autoS = cur.s; }
         cur.manual = true;
         cur.I = Math.max(0, Math.min(1, target / 100));
-        if (ev.tier !== 'hard' && Number.isFinite(Number(ev.s))) cur.s = Number(ev.s);
-        cur.lastAt = Number(ev.at) || Date.now();
+        if (ev.tier !== 'hard' && ev.s != null && Number.isFinite(Number(ev.s))) cur.s = Number(ev.s);
+        // 工作台写的是 ISO 字符串：能解析就用它，解析不出才回落到上一次时间（不能用 now）。
+        cur.lastAt = toMs(ev.at) || cur.lastAt;
       }
+      cur.updatedAt = toMs(ev.at) || Date.now();
       if (cur.status === 'expired' && ev.tier !== 'temp') cur.status = 'active';
     } else if (ev.ev === 'manualReset') {
-      // 撤销人工调整：I 回到被人工改之前的值，继续按自动规则衰减。
+      // 撤销人工调整：I 与 S 都回到被人工改之前的值，继续按自动规则衰减。
       if (cur.autoI !== null && Number.isFinite(Number(cur.autoI))) cur.I = Number(cur.autoI);
+      if (cur.autoS !== null && Number.isFinite(Number(cur.autoS))) cur.s = Number(cur.autoS);
       cur.manual = false;
       cur.autoI = null;
-      cur.lastAt = Number(ev.at) || cur.lastAt;
+      cur.autoS = null;
+      cur.lastAt = toMs(ev.at) || cur.lastAt;
+      cur.updatedAt = toMs(ev.at) || Date.now();
     }
   }
   for (const f of map.values()) {

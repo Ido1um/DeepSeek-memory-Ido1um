@@ -66,7 +66,7 @@ function seedLog(key = KEY, sid = 'session-test-0001', startedAt = Date.now()) {
   // messageId 必须全局唯一：store 内部 seenIds 是进程级去重表，多个用例复用同一 id 会被当成重复消息丢掉。
   const tag = `${sid}-${startedAt}`;
   store.recordIncoming({ key, text: '用户：以后都叫我老板', sender: '用户', time: startedAt + 1000, messageId: `${tag}-m1` });
-  store.recordIncoming({ key, text: '助手记住了：用户喜欢擂饭', sender: '男友', time: startedAt + 2000, messageId: `${tag}-m2` });
+  store.recordIncoming({ key, text: '助手记住了：用户喜欢火锅', sender: '男友', time: startedAt + 2000, messageId: `${tag}-m2` });
   store.recordOutgoing({ key, text: '好，记下了', time: startedAt + 3000, messageId: `${tag}-m3` });
   return sid;
 }
@@ -84,8 +84,8 @@ test('composePrompt：没有事实卡/交接时原文不动', (t) => {
 test('composePrompt：事实卡 + 交接都拼进去，commit 后只消费一次', (t) => {
   setup(t, { profileEnabled: true });
   const sid = seedLog();
-  store.writeProfile('- 用户喜欢擂饭\n- 用户希望叫助手助手');
-  store.setHandover(KEY, '【7 天记忆交接】上一段聊了擂饭', { reason: 'age', sessionId: sid });
+  store.writeProfile('- 用户喜欢火锅\n- 用户希望叫助手助手');
+  store.setHandover(KEY, '【7 天记忆交接】上一段聊了火锅', { reason: 'age', sessionId: sid });
   const host = createNullHost();
   const engine = createMemoryEngine({ host });
 

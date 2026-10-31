@@ -44,7 +44,7 @@ test('classOf：六类判定', () => {
   assert.equal(classOf('以后别叫我助手'), 'rule');
   assert.equal(classOf('你是助手，不是助手'), 'persona');
   assert.equal(classOf('昨天去了杭州西湖'), 'event');
-  assert.equal(classOf('我喜欢百合味酸奶'), 'pref');
+  assert.equal(classOf('我喜欢草莓味酸奶'), 'pref');
   assert.equal(classOf('记住买牛奶回家'), 'note');
   assert.equal(classOf('记住下周一交报告', { dueAt: true }), 'task');
   assert.equal(classOf('我生日是 9 月 5 日', { hard: true }), 'identity');

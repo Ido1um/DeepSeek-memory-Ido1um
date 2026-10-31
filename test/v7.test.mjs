@@ -265,7 +265,7 @@ test('engine：write 模式日终用长期库投影事实卡并留备份', async
   const { dir, engine } = sandbox(t, { scoring: { mode: 'write' }, profile: { enabled: true, source: 'projection' } });
   store.writeProfile('旧的模型摘要');
   appendEvent(factEvent({ id: 'h-a1', tier: 'hard', text: '用户 9 月 5 日生日', value: '9 月 5 日' }));
-  appendEvent(factEvent({ id: 'h-a2', tier: 'long', I: 0.8, pattern: 'food', label: '爱吃', value: '百合味酸奶', text: '用户爱喝百合味酸奶' }));
+  appendEvent(factEvent({ id: 'h-a2', tier: 'long', I: 0.8, pattern: 'food', label: '爱吃', value: '草莓味酸奶', text: '用户爱喝酸奶' }));
   const e = engine();
   const result = await e.runDailyMaintenance(Date.now(), { force: true });
   assert.equal(result.ok, true);
@@ -273,7 +273,7 @@ test('engine：write 模式日终用长期库投影事实卡并留备份', async
   const text = fs.readFileSync(card.cardFile(dir), 'utf8');
   assert.ok(text.includes('【长期记忆（事实卡）】'));
   assert.ok(text.includes('9 月 5 日'));
-  assert.ok(text.includes('百合味酸奶'));
+  assert.ok(text.includes('草莓味酸奶'));
   assert.ok(card.listBackups(dir).length >= 1);
   assert.equal(result.profile.dropped, 0);
 });
@@ -282,7 +282,7 @@ test('engine：卡更新后给老会话再注入一次，且只一次', async (t
   const { engine } = sandbox(t, { profile: { enabled: true, reinjectAfterAgeMs: 3 * DAY, reinjectGapMs: 3 * DAY } });
   const sid = 's-reinject';
   store.noteSession(KEY, sid, Date.now() - 5 * DAY);
-  store.writeProfile('- 用户喜欢擂饭');
+  store.writeProfile('- 用户喜欢火锅');
   const e = engine();
 
   const first = e.composePrompt(KEY, sid, '在吗');
@@ -291,10 +291,10 @@ test('engine：卡更新后给老会话再注入一次，且只一次', async (t
   assert.equal(store.profileInjectedFor(sid), true);
 
   // 卡更新（写文件会让 store 清掉注入标记）→ 下一句应该重新带卡
-  store.writeProfile('- 用户喜欢擂饭\n- 用户爱喝百合味酸奶');
+  store.writeProfile('- 用户喜欢火锅\n- 用户爱喝草莓味酸奶');
   const second = e.composePrompt(KEY, sid, '再说一遍');
   assert.equal(second.profile, true);
-  assert.match(second.text, /百合味酸奶/);
+  assert.match(second.text, /草莓味酸奶/);
   e.commitInjections(KEY, sid, second);
 
   const third = e.composePrompt(KEY, sid, '还有吗');

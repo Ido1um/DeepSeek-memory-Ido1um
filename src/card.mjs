@@ -78,11 +78,11 @@ export function projectBody(facts = [], rawConfig = {}) {
     const rest = mine.filter((f) => f.tier !== 'hard' && f.tier !== 'long').sort(byScore);
     const lines = [];
     let used = 0;
-    const hardCap = g.about === 'user' ? cfg.hardReserveChars : g.budget;
     const take = (f, cap) => {
       const body = bulletOf(f);
       if (!body) return false;
       const len = body.length + 2; // "· " + 换行
+      // cap 是「本组上限」；hard 传全局 maxChars（不受组预算限制，只受总长限制）。
       if (used + len > cap) return false;
       if (total + len > cfg.maxChars) return false;
       lines.push(`· ${body}`);
@@ -91,9 +91,12 @@ export function projectBody(facts = [], rawConfig = {}) {
       included.push(f);
       return true;
     };
-    // hard 先写（用户侧留 hardReserve，但 hard 超过预留时允许借用后续空间）
+    // hard 先写：用户侧硬事实永不因预算被丢（只受全局 maxChars 限制），
+    // 所以传 cfg.maxChars 而不是 maxChars - total（后者把 used 重复扣一次，
+    // 结果 6 条硬事实就把额度吃光，后面的硬事实被静默丢弃）。
+    // 「我的事」仍受 botMaxChars 限额（人设区刻意保持精简）。
     for (const f of hard) {
-      if (!take(f, g.about === 'user' ? Math.max(hardCap, cfg.maxChars - total) : g.budget)) dropped.push(f);
+      if (!take(f, g.about === 'user' ? cfg.maxChars : g.budget)) dropped.push(f);
     }
     for (const f of long) if (!take(f, g.budget)) dropped.push(f);
     for (const f of rest) if (!take(f, g.budget)) dropped.push(f);

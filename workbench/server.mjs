@@ -211,7 +211,7 @@ function buildGraph(facts, { maxFacts = 240 } = {}) {
   const TOPIC_RULES = [
     ['生日', /生日|寿|蛋糕/],
     ['名字/称呼', /名字|称呼|小名|叫我|自称|助手|昵称/],
-    ['住处', /住|湖北|兰州|宿舍|老家|搬/],
+    ['住处', /住|宿舍|老家|搬/],
     ['学业/工作', /高考|大学|专业|学院|课|实验|论文|考试|报告|工作|上班|实习/],
     ['喜好', /喜欢|爱|讨厌|不吃|爱吃|受不了|怕|习惯|酸奶|鱼|橘子/],
     ['约定/规则', /答应|约定|不许|必须|只能|以后|别再|不能|规矩/],
@@ -516,11 +516,14 @@ const TIER_HALF_LIFE = { long: 30, general: 3, temp: 1.5 };
 function factOp({ id, op, reason, tier, score }) {
   const dataDir = loadBridgeMemory().mem.dir || DEFAULT_DATA;
   if (!id) throw Object.assign(new Error('缺少 id'), { status: 400 });
-  const at = new Date().toISOString();
+  // 事件 at 必须是毫秒数（和引擎一致）：引擎用 Number(ev.at) 读，ISO 字符串会变 NaN，
+  // 导致 lastAt 每次被打回「现在」→ 被人工调过的条目永不衰减。审计日志仍用 ISO 方便人看。
+  const at = Date.now();
+  const auditAt = new Date(at).toISOString();
   const audit = (extra) => {
     fs.mkdirSync(path.join(dataDir, 'logs'), { recursive: true });
     fs.appendFileSync(path.join(dataDir, 'logs', 'facts-audit.jsonl'),
-      JSON.stringify({ at, op, id, by: 'workbench', reason: reason || '', ...extra }) + '\n', 'utf8');
+      JSON.stringify({ at: auditAt, op, id, by: 'workbench', reason: reason || '', ...extra }) + '\n', 'utf8');
   };
 
   // 人工调档 / 调分：写 longterm 事件（不是墓碑），保留历史、可撤销。

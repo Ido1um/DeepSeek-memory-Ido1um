@@ -52,29 +52,44 @@ export function ensureRules(dir, { force = false } = {}) {
   return { created: true, file: rulesFile(dir), template: true };
 }
 
-/** 按行截断（保留标题行），超出部分标注省略行数。 */
+/** 上一次截断留下的尾注；重新截断前先摘掉，否则会一层层叠上去。 */
+const TAIL_RE = /\n…（还有 \d+ 行未展开）\s*$/;
+const minTail = 18; // 尾注大概占多少字（"…（还有 123 行未展开）"）
+
+/**
+ * 按行截断（保留标题行），超出部分标注省略行数。
+ * 关键：**必须是原文前缀**——遇到第一条放不下的行就停，不能跳过它去捡后面更短的行。
+ * 旧实现是 `cut += 1; continue`，结果一张按「硬事实在前」排好的卡，超预算时
+ * 后面的短软事实能挤进来、前面的长硬事实被跳过丢失，直接违反「硬事实永不因预算被丢」。
+ * maxChars<=0 表示这一段预算为 0，正确行为是「不注入」，不是「全量注入」。
+ */
 export function trimLines(text, maxChars) {
-  const src = String(text ?? '').trim();
-  if (!src) return { text: '', chars: 0, truncated: 0 };
-  if (!Number.isFinite(maxChars) || maxChars <= 0 || src.length <= maxChars) {
-    return { text: src, chars: src.length, truncated: 0 };
-  }
-  const lines = src.split(/\r?\n/);
+  const raw = String(text ?? '').replace(/\uFEFF/g, '').replace(TAIL_RE, '').trim();
+  if (!raw) return { text: '', chars: 0, truncated: 0 };
+  const budget = Number.isFinite(Number(maxChars)) ? Math.floor(Number(maxChars)) : 0;
+  const lines = raw.split(/\r?\n/);
+  if (budget <= 0) return { text: '', chars: 0, truncated: lines.length };
+  if (raw.length <= budget) return { text: raw, chars: raw.length, truncated: 0 };
+
   const kept = [];
   let used = 0;
-  let cut = 0;
   for (const line of lines) {
-    const add = line.length + 1;
-    if (used + add > maxChars - 12) {
-      cut += 1;
-      continue;
-    }
+    const add = (kept.length ? 1 : 0) + line.length;
+    if (used + add > budget - minTail) break; // 前缀截断：放不下就停
     kept.push(line);
     used += add;
   }
-  const body = kept.join('\n').trim();
-  const tail = cut > 0 ? `\n…（还有 ${cut} 行未展开）` : '';
-  const out = (body + tail).slice(0, maxChars);
+  if (!kept.length) {
+    // 第一行就超长（基本只会在预算很小时发生）：切一段，但不切断代理对
+    let head = lines[0].slice(0, Math.max(0, budget - minTail));
+    if (/[\uD800-\uDBFF]$/.test(head)) head = head.slice(0, -1);
+    return head ? { text: head, chars: head.length, truncated: lines.length } : { text: '', chars: 0, truncated: lines.length };
+  }
+  const cut = lines.length - kept.length;
+  const body = kept.join('\n');
+  if (cut <= 0) return { text: body, chars: body.length, truncated: 0 };
+  const tail = `\n…（还有 ${cut} 行未展开）`;
+  const out = body.length + tail.length <= budget ? body + tail : body;
   return { text: out, chars: out.length, truncated: cut };
 }
 

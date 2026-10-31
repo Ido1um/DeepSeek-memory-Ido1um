@@ -67,16 +67,24 @@ export function parseTurnLine(line) {
   }
 }
 
-/** 按时间顺序返回 turn 记录（可选按 sessionId 过滤）。 */
+/**
+ * 按时间顺序返回 turn 记录（可选按 sessionId 过滤）。
+ *
+ * 过滤语义：有 sid 的行只认本会话；老日志里没有 sid 的行不能混进别的会话（否则 A 会话的
+ * 轮转判断会拿 B 会话的 token 去比阈值）。所以先取精确匹配；一条都没有时，才退回「无 sid 行」。
+ */
 export function readTurns(dir, { sessionId = '', limit = 4000 } = {}) {
   const text = readTail(tokenLogPath(dir));
   if (!text) return [];
-  const out = [];
+  const all = [];
   for (const line of text.split(/\r?\n/)) {
     const t = parseTurnLine(line);
-    if (!t) continue;
-    if (sessionId && t.sid && t.sid !== String(sessionId)) continue;
-    out.push(t);
+    if (t) all.push(t);
+  }
+  let out = all;
+  if (sessionId) {
+    const exact = all.filter((t) => String(t.sid || '') === String(sessionId));
+    out = exact.length ? exact : all.filter((t) => !t.sid);
   }
   return limit > 0 ? out.slice(-limit) : out;
 }

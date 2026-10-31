@@ -24,6 +24,8 @@ const REL = [
 const MONTH_DAY_RE = /(\d{4})\s*[年\-/.]\s*(\d{1,2})\s*[月\-/.]\s*(\d{1,2})\s*[日号]?/;
 const MD_SHORT_RE = /(?<!\d)(\d{1,2})\s*月\s*(\d{1,2})\s*[日号]?/;
 const TIME_RE = /(上午|早上|中午|下午|晚上|夜里)?\s*([0-9]{1,2}|[零一二三四五六七八九十两]{1,3})\s*[点时](?:\s*(半)|[:：]\s*(\d{2}))?/;
+/** 只写时刻不写「点」：9:30 / 21:05（不能把日期里的 - 当分隔符）。 */
+const BARE_CLOCK_RE = /(?<!\d)(\d{1,2})\s*[:：]\s*(\d{2})(?!\d)/;
 
 // 中文数字：三点、十二点、两天后、三天后 —— 只处理 0–99，够用
 function cnNum(s) {
@@ -37,14 +39,24 @@ function cnNum(s) {
 
 function applyTime(day, text) {
   const m = text.match(TIME_RE);
+  const bare = !m ? text.match(BARE_CLOCK_RE) : null;
   const d = new Date(day);
-  if (!m) { d.setHours(9, 0, 0, 0); return { at: d, hasTime: false }; }
-  const word = m[1] || '';
-  let hour = cnNum(m[2]);
-  const minute = m[3] ? 30 : (m[4] ? Number(m[4]) : 0);
-  if ((word === '下午' || word === '晚上' || word === '夜里') && hour < 12) hour += 12;
-  if (word === '中午' && hour < 11) hour += 12;
-  if (hour > 23) hour = 23;
+  if (!m && !bare) { d.setHours(9, 0, 0, 0); return { at: d, hasTime: false }; }
+  let hour; let minute;
+  if (m) {
+    const word = m[1] || '';
+    hour = cnNum(m[2]);
+    minute = m[3] ? 30 : (m[4] ? Number(m[4]) : 0);
+    if ((word === '下午' || word === '晚上' || word === '夜里') && hour < 12) hour += 12;
+    if (word === '中午' && hour < 11) hour += 12;
+  } else {
+    hour = Number(bare[1]);
+    minute = Number(bare[2]);
+  }
+  if (!Number.isFinite(hour) || hour < 0 || hour > 23 || !Number.isFinite(minute) || minute < 0 || minute > 59) {
+    d.setHours(9, 0, 0, 0);
+    return { at: d, hasTime: false };
+  }
   d.setHours(hour, minute, 0, 0);
   return { at: d, hasTime: true };
 }
@@ -67,7 +79,13 @@ export function parseDue(text, now = Date.now()) {
   if (month && month >= 1 && month <= 12 && day && day >= 1 && day <= 31) {
     const y = year || today.getFullYear();
     let cand = new Date(y, month - 1, day);
-    if (!year && cand < today) cand = new Date(y + 1, month - 1, day);
+    // JS 会把 2 月 30 日「顺延」成 3 月 2 日：这种不存在的日期宁可解不出，也不要瞎猜。
+    if (cand.getFullYear() !== y || cand.getMonth() !== month - 1 || cand.getDate() !== day) return null;
+    if (!year && cand < today) {
+      const ny = y + 1;
+      const nc = new Date(ny, month - 1, day);
+      if (nc.getFullYear() === ny && nc.getMonth() === month - 1 && nc.getDate() === day) cand = nc;
+    }
     const t = applyTime(cand, s);
     return { due: ymd(cand), dueAt: t.at.getTime(), phrase, hasTime: t.hasTime, source: 'date' };
   }
@@ -109,10 +127,14 @@ export function parseDue(text, now = Date.now()) {
 }
 
 // 该不该今天提醒：进入「截止前 24 小时」窗口，且没提醒过，且没超期太久。
-export function reminderWindow(fact, now = Date.now(), { horizonMs = 24 * 3600e3, graceMs = 12 * 3600e3 } = {}) {
+// 该不该今天提醒：进入「截止前 24 小时」窗口，且没提醒过；过点后仍留一段逾期窗口
+// （默认 72 小时，期间提醒会带「已逾期」），否则 23:14 说「这周五要交」这种当天已过的
+// 事项会永远静默 —— 它确实还没被提醒过。
+export function reminderWindow(fact, now = Date.now(), { horizonMs = 24 * 3600e3, graceMs = 12 * 3600e3, overdueMs = 0 } = {}) {
   if (!fact || !fact.dueAt || fact.notifiedAt || !fact.task) return false;
   const left = fact.dueAt - now;
-  return left <= horizonMs && left >= -graceMs;
+  const back = Math.max(graceMs, overdueMs);
+  return left <= horizonMs && left >= -back;
 }
 
 export { ymd, addDays, startOfDay };

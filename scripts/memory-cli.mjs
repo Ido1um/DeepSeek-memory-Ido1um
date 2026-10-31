@@ -9,7 +9,7 @@
 //   node scripts/memory-cli.mjs card                 # 预览投影后的事实卡
 //   node scripts/memory-cli.mjs invalidate <id|sig> --reason "记错了" [--cascade]
 //   node scripts/memory-cli.mjs reinstate <id>
-//   node scripts/memory-cli.mjs search 擂饭          # 聊天原文（7 天日志 + 归档）
+//   node scripts/memory-cli.mjs search 火锅          # 聊天原文（7 天日志 + 归档）
 //   node scripts/memory-cli.mjs refresh-card         # 立刻按事实库重排事实卡
 //
 // 约定：只加事件、永不物理删（作废=invalidate 事件 + 审计行）；默认 dry-run 之外的操作都会立刻落盘。
@@ -25,7 +25,8 @@ import * as store from '../src/store.mjs';
 import * as inv from '../src/invalidate.mjs';
 import { createMemoryEngine } from '../src/engine.mjs';
 import { createNullHost } from '../src/host.mjs';
-import { memorySection, ownerQQ } from '../src/config.mjs';
+import { memorySection, ownerQQ, loadConfig } from '../src/config.mjs';
+import { probePort } from '../src/portprobe.mjs';
 import { resolveDataDir, ensureDir } from '../src/paths.mjs';
 import { normalizeScoring, search as searchFacts } from '../src/scoring-runner.mjs';
 import { describe } from '../src/score.mjs';
@@ -79,7 +80,7 @@ function cmdStatus() {
   const tiers = active.reduce((m, f) => ((m[f.tier] = (m[f.tier] || 0) + 1), m), {});
   const status = engine.rotationStatus(KEY, store.getSessionInfo(KEY)?.sessionId || '');
   const pol = engine.policyFor(KEY);
-  const cardText = card.readCardText?.(engine.dataDir()) || (() => {
+  const cardText = (() => {
     try { return fs.readFileSync(card.cardFile(engine.dataDir()), 'utf8'); } catch { return ''; }
   })();
   console.log(`数据目录   ${engine.dataDir()}`);
@@ -218,22 +219,28 @@ try {
     case 'doctor': cmdDoctor(); break;
     case 'health': {
       // 一条命令看全家：桥接/工作台/记忆开关/日终/到期。退出码 0=健康，1=有问题。
-      const { execSync } = await import('node:child_process');
-      const net = (port) => {
-        try { return execSync(`netstat -ano | findstr :${port}`, { encoding: 'utf8' }).includes('LISTENING'); } catch { return false; }
+      // 端口用纯 Node TCP 探测：不依赖 netstat/子进程（受限环境里 execSync 会被沙箱拦住，
+      // 旧实现还会把「探测失败」误报成「没在监听」）。三态：open=✓、refused=✗、blocked=? 不计失败。
+      const bridgePort = Number(loadConfig().consolePort) || 3100;
+      const wbPort = Number(process.env.WORKBENCH_PORT) || 7351;
+      const portRow = (label, port, p) => {
+        const suffix = p.state === 'refused'
+          ? '（没在监听）'
+          : p.state === 'blocked' ? `（无法判定 ${p.code || '探测被拦'}）` : '';
+        return [`${label} ${port}${suffix}`, p.state === 'open' ? '✓' : p.state === 'refused' ? '✗' : '?', p.ok === true];
       };
-      const st = store.getSessionInfo ? null : null;
+      const [bProbe, wProbe] = await Promise.all([probePort(bridgePort), probePort(wbPort)]);
       const memSt = (() => { try { return JSON.parse(fs.readFileSync(path.join(store.dataDir(), 'state', 'memory.json'), 'utf8')); } catch { return {}; } })();
       const daily = memSt.lastDailyAt ? new Date(memSt.lastDailyAt) : null;
       const hours = daily ? (Date.now() - daily.getTime()) / 3600e3 : 999;
       const rows = [
-        ['桥接 3100', net(3100)],
-        ['工作台 7351', net(7351)],
-        ['记忆开关', memorySection()?.enabled !== false],
-        [`日终新鲜（${hours === 999 ? '从未' : hours.toFixed(1) + ' 小时前'}）`, hours < 26]
+        portRow('桥接', bridgePort, bProbe),
+        portRow('工作台', wbPort, wProbe),
+        ['记忆开关', memorySection()?.enabled !== false ? '✓' : '✗', memorySection()?.enabled !== false],
+        [`日终新鲜（${hours === 999 ? '从未' : hours.toFixed(1) + ' 小时前'}）`, hours < 26 ? '✓' : '✗', hours < 26]
       ];
       let bad = 0;
-      for (const [name, ok] of rows) { console.log(`${ok ? '✓' : '✗'} ${name}`); if (!ok) bad++; }
+      for (const [name, mark, ok] of rows) { console.log(`${mark} ${name}`); if (!ok) bad++; }
       try { cmdDue(); } catch {}
       process.exitCode = bad ? 1 : 0;
       break;

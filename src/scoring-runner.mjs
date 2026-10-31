@@ -8,7 +8,7 @@
 // 影子模式的目的：先用真实流量验证「抽得对不对、分数算得对不对、量有多大」，
 // 一天没问题再把 mode 切成 write，代码路径完全一致，只是换个文件落地。
 
-import { detectSignals, topicOf, classOf } from './facts.mjs';
+import { detectSignals, topicOf, classOf, subjectTag } from './facts.mjs';
 import { parseDue } from './due.mjs';
 import {
   SCORING_DEFAULTS,
@@ -42,6 +42,12 @@ function sigOf(about, pattern, extra = '') {
   return extra ? `${base}:${extra}` : base;
 }
 
+/** 带主语槽的 sig：自指主语不带（保持老 sig 不变），「我妈/我爸/我家」才带。 */
+function sigOfSubject(about, pattern, subject) {
+  const tag = subjectTag(subject);
+  return tag ? `${about || 'user'}:${tag}:${pattern || 'note'}` : sigOf(about, pattern);
+}
+
 function shortHash(s) {
   let h = 0;
   for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) | 0;
@@ -61,11 +67,13 @@ export function classify(text, cfg = SCORING_DEFAULTS) {
   for (const f of signals.facts) {
     const about = f.about || 'user';
     const pattern = f.pattern || f.key || 'fact';
-    const sig = sigOf(about, pattern);
+    const subject = f.subject || '';
+    const sig = sigOfSubject(about, pattern, subject);
     candidates.push({
       sig,
-      topic: topicOf(t, { about, pattern, sig }),
+      topic: topicOf(t, { about, subject, pattern, sig }),
       about,
+      subject,
       pattern,
       label: f.label || '',
       value: f.value || '',
@@ -273,8 +281,9 @@ export function settle({ now = Date.now(), scoring, dir = '' } = {}) {
     byTier[next] = (byTier[next] || 0) + 1;
     if (next === f.tier) continue;
     if (next === 'expired') {
-      transitions.push({ id: f.id, sig: f.sig, from: f.tier, to: 'expired', score, reason: 'temp-ttl' });
-      events.push({ ev: 'expire', id: f.id, at: now, reason: 'temp-ttl', score });
+      const reason = f.task && Number(f.dueAt) ? 'task-overdue' : 'temp-ttl';
+      transitions.push({ id: f.id, sig: f.sig, from: f.tier, to: 'expired', score, reason });
+      events.push({ ev: 'expire', id: f.id, at: now, reason, score });
       continue;
     }
     const moved = next === 'long' ? { tier: next, s: f.s } : demoted(f, next, cfg);
