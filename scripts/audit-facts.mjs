@@ -17,6 +17,7 @@ import path from 'node:path';
 
 import * as lt from '../src/longterm.mjs';
 import { classify, normalizeScoring } from '../src/scoring-runner.mjs';
+import { writeGate, GATE_REASONS } from '../src/gate.mjs';
 import { memorySection } from '../src/config.mjs';
 import { dataDir } from '../src/store.mjs';
 
@@ -29,6 +30,7 @@ const flag = (k, d) => {
 };
 const DAYS = Number(flag('days', 7)) || 7;
 const AS_JSON = flag('json', false) === true;
+const WITH_GATE = flag('gate', false) === true;
 const DIR = String(flag('dir', '')) || dataDir();
 const KEY = String(flag('key', '')) || `private:${memorySection()?.ownerQQ || '10001'}`;
 
@@ -98,6 +100,19 @@ for (const m of messages) {
 }
 const extra = facts.filter((f) => !allSig.has(f.sig));
 
+// 5) 存量体检（--gate）：拿当前的写入门规则回扫库里已有事实，
+//    看「如果按今天的标准，这些当初不会被写进来」的有哪些、各自什么理由。
+//    只报告，不删除——要不要作废由人决定（工作台/ invalidate）。
+const gateHits = [];
+if (WITH_GATE) {
+  for (const f of facts) {
+    const text = String(f.text || f.quote || f.value || '');
+    const g = writeGate(text, { about: f.about || 'user', class: f.class || 'note', value: String(f.value || '') }, { cfg });
+    if (!g.ok) gateHits.push({ id: f.id, class: f.class || 'note', reason: g.reason, value: String(f.value || '').slice(0, 60) });
+  }
+}
+const gateByReason = gateHits.reduce((m, h) => ({ ...m, [h.reason]: (m[h.reason] || 0) + 1 }), {});
+
 const report = {
   dir: DIR,
   key: KEY,
@@ -113,6 +128,7 @@ const report = {
     candidates: m.candidates,
   })),
   extraFacts: extra.map((f) => ({ id: f.id, sig: f.sig, tier: f.tier, value: String(f.value || '').slice(0, 50) })),
+  ...(WITH_GATE ? { gate: { checked: facts.length, blocked: gateHits.length, byReason: gateByReason, hits: gateHits } } : {}),
 };
 
 if (AS_JSON) {
@@ -138,5 +154,15 @@ if (AS_JSON) {
     console.log(`\n· 库里另有 ${report.extraFacts.length} 条事实来自回填/手工（原文窗口外或已归档），正常：`);
     for (const f of report.extraFacts.slice(0, 5)) console.log(`  ${f.id} ${f.sig} [${f.tier}] ${f.value}`);
     if (report.extraFacts.length > 5) console.log(`  … 其余 ${report.extraFacts.length - 5} 条`);
+  }
+  if (report.gate) {
+    const g = report.gate;
+    console.log(`\n写入门体检：${g.checked} 条事实里，按今天的规则会被挡 ${g.blocked} 条` +
+      (g.blocked ? `（${Object.entries(g.byReason).map(([k, v]) => `${k} ${v}`).join(' · ')}）` : ''));
+    for (const h of g.hits.slice(0, 15)) {
+      console.log(`  [${h.reason}] ${h.reason === 'meta' ? '' : ''}${h.value}（${GATE_REASONS[h.reason] || h.reason}）`);
+    }
+    if (g.hits.length > 15) console.log(`  … 其余 ${g.hits.length - 15} 条`);
+    console.log('  · 只报告不删除：要清的话在工作台作废，或跑 memory-cli invalidate <id>。');
   }
 }

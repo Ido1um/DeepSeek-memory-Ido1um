@@ -25,6 +25,19 @@ export const V10_DEFAULTS = Object.freeze({
   cueMax: 15,
   floorHard: 80,
   salienceFloor: 0, // 激活值下限：低于它的条目不进注入（0 = 不启用；本机开 20）
+  toneResidue: false, // 情绪残留 → 注入末尾加一句「语气提示」（P2 阶段 C，默认关）
+  toneSummary: false, // 人格语气摘要 profile-tone.md（P2 阶段 D，默认关）
+  matchTokens: false, // 检索匹配改用整句切词（默认 substring，关闭时行为不变）
+  tone: {
+    minEmotion: 0.6,
+    maxDetail: 0.4,
+    windowDays: 7,
+    cooldownHours: 24,
+    maxChars: 60,
+    summaryRecentDays: 7, // 摘要把最近几天的强情绪事件算进来
+    summaryMaxChars: 200, // 文件上限
+    summaryInjectMaxChars: 120 // 注入时最多带多少字
+  },
   weights: { topic: 12, sig: 8, kw: 5, affect: 6, recency: 4 },
   qLabels: { high: '比较确定', mid: '大概记得', low: '只记得片段' },
   fragmentsMax: 3,
@@ -43,9 +56,10 @@ export function normalizeV10(raw) {
     detailHalfLife: { ...V10_DEFAULTS.detailHalfLife },
     weights: { ...V10_DEFAULTS.weights },
     qLabels: { ...V10_DEFAULTS.qLabels },
-    thresholds: { ...V10_DEFAULTS.thresholds }
+    thresholds: { ...V10_DEFAULTS.thresholds },
+    tone: { ...V10_DEFAULTS.tone }
   };
-  for (const k of ['enabled', 'emit', 'rankInInject', 'recordRetrieved']) {
+  for (const k of ['enabled', 'emit', 'rankInInject', 'recordRetrieved', 'toneResidue', 'toneSummary', 'matchTokens']) {
     if (typeof src[k] === 'boolean') c[k] = src[k];
   }
   for (const k of ['emotionHalfLife', 'emotionHalfLifeStrong', 'strongEmotion', 'cueMax', 'floorHard', 'fragmentsMax']) {
@@ -69,6 +83,16 @@ export function normalizeV10(raw) {
   if (src.thresholds && typeof src.thresholds === 'object') {
     if (pos(src.thresholds.high, null) != null) c.thresholds.high = pos(src.thresholds.high, c.thresholds.high);
     if (pos(src.thresholds.mid, null) != null) c.thresholds.mid = pos(src.thresholds.mid, c.thresholds.mid);
+  }
+  if (src.tone && typeof src.tone === 'object') {
+    if (src.tone.minEmotion != null) c.tone.minEmotion = Math.min(1, Math.max(0, num(src.tone.minEmotion, c.tone.minEmotion)));
+    if (src.tone.maxDetail != null) c.tone.maxDetail = Math.min(1, Math.max(0, num(src.tone.maxDetail, c.tone.maxDetail)));
+    if (pos(src.tone.windowDays, null) != null) c.tone.windowDays = pos(src.tone.windowDays, c.tone.windowDays);
+    if (pos(src.tone.cooldownHours, null) != null) c.tone.cooldownHours = pos(src.tone.cooldownHours, c.tone.cooldownHours);
+    if (pos(src.tone.maxChars, null) != null) c.tone.maxChars = Math.min(200, pos(src.tone.maxChars, c.tone.maxChars));
+    if (pos(src.tone.summaryRecentDays, null) != null) c.tone.summaryRecentDays = Math.min(90, pos(src.tone.summaryRecentDays, c.tone.summaryRecentDays));
+    if (pos(src.tone.summaryMaxChars, null) != null) c.tone.summaryMaxChars = Math.min(400, pos(src.tone.summaryMaxChars, c.tone.summaryMaxChars));
+    if (pos(src.tone.summaryInjectMaxChars, null) != null) c.tone.summaryInjectMaxChars = Math.min(200, pos(src.tone.summaryInjectMaxChars, c.tone.summaryInjectMaxChars));
   }
   return c;
 }
@@ -357,4 +381,210 @@ export function passesSalience(row = {}, cfg = V10_DEFAULTS) {
   const a = Number(row.activation);
   if (!Number.isFinite(a)) return true;
   return a >= floor;
+}
+
+/**
+ * P2 阶段 C：情绪残留 → 一句语气提示。
+ *
+ * 触发（三条同时满足）：
+ *   1. 事实有 non-zero `emo`，且当前 |E_t| ≥ cfg.tone.minEmotion（情绪还没褪干净）；
+ *   2. 细节已经模糊：`detailOf < cfg.tone.maxDetail`（不是「还记着全过程」的时候）；
+ *   3. 最近 `windowDays` 天内被提过（避免翻很久以前的旧账）。
+ * 冷却：同一个 topic 在 `cooldownHours` 内最多提示一次（由调用方传入 `lastToneAt`）。
+ * 只返回一行文字，不生成事实、不进事实卡、不参与打分。
+ */
+export function toneCandidate(facts = [], { query = '', cfg = V10_DEFAULTS, now = Date.now() } = {}) {
+  const q = String(query || '').trim();
+  const tone = cfg.tone || V10_DEFAULTS.tone;
+  const windowMs = (Number(tone.windowDays) || 7) * DAY;
+  let best = null;
+  for (const f of facts) {
+    if (!f) continue;
+    // 旧回填事实可能没有 topic，用 sig 兜底，否则永远轮不到它
+    const topic = String(f.topic || f.sig || '');
+    if (!topic) continue;
+    if (f.status && f.status !== 'active') continue;
+    // 只对「情绪偏低」的残留提示；高兴的事不该被说成「气氛偏低」
+    if (!(Number(f.emo) < 0)) continue;
+    const emo = Math.abs(Number(f.emo) || 0);
+    if (emo < (Number(tone.minEmotion) || 0.6)) continue;
+    const lastAt = Number(f.lastAt) || 0;
+    const recent = lastAt > 0 && now - lastAt <= windowMs;
+    const label = String(f.label || '');
+    const topicTail = String(topic).replace(/^[a-z]+:/i, '');
+    // 这句话是否正提到它：允许「查询里含标签/主题」或「标签/主题里含查询」，
+    // 不做整句子串匹配（真实消息很少恰好是事实原文）。
+    const hit = !!q && (
+      topic.includes(q) ||
+      (label && (q.includes(label) || label.includes(q))) ||
+      (topicTail && (q.includes(topicTail) || topicTail.includes(q))) ||
+      String(f.value || '').includes(q)
+    );
+    // 「最近提过」= 这条事实本身在窗口内被提过，或当前这句话正提到它；
+    // 两者都没有就不翻旧账（避免主动提起很久以前的情绪）。
+    if (!recent && !hit) continue;
+    const e = emotionOf(f, cfg, now);
+    if (Math.abs(e) < (Number(tone.minEmotion) || 0.6)) continue;
+    if (detailOf(f, cfg, now, facts) >= (Number(tone.maxDetail) || 0.4)) continue;
+    const score = Math.abs(e) * (hit ? 2 : 1);
+    if (!best || score > best.score) {
+      best = {
+        topic,
+        label: String(f.label || topic || '').replace(/^user:/, ''),
+        emotion: Math.round(e * 100) / 100,
+        detail: Math.round(detailOf(f, cfg, now, facts) * 100) / 100,
+        score
+      };
+    }
+  }
+  return best;
+}
+
+/**
+ * 生成「语气提示」一行。返回 null 表示这次不该提示。
+ * `lastToneAt` 是同一 topic 上次提示的时间（ms），由调用方从 `tone` 事件里取。
+ */
+export function toneHintOf(facts = [], { query = '', cfg = V10_DEFAULTS, now = Date.now(), lastToneAt = 0 } = {}) {
+  if (!cfg || cfg.enabled !== true || cfg.toneResidue !== true) return null;
+  const tone = cfg.tone || V10_DEFAULTS.tone;
+  const cand = toneCandidate(facts, { query, cfg, now });
+  if (!cand) return null;
+  const coolMs = (Number(tone.cooldownHours) || 24) * 3600_000;
+  const last = typeof lastToneAt === 'function' ? Number(lastToneAt(cand.topic)) || 0 : Number(lastToneAt) || 0;
+  if (last && now - last < coolMs) return null;
+  const maxChars = Number(tone.maxChars) || 60;
+  let text = `〔语气提示〕上次谈到「${cand.label}」时气氛偏低，这次注意语气，不必主动提。`;
+  if (text.length > maxChars) text = `${text.slice(0, Math.max(0, maxChars - 1))}…`;
+  return { topic: cand.topic, label: cand.label, emotion: cand.emotion, text };
+}
+
+// ── P2 阶段 D：人格语气摘要（profile-tone.md，只读、可人工直改） ──────────────
+
+export function toneSummaryPath(dir = '') {
+  return path.join(dir || '.', 'profile-tone.md');
+}
+
+// 按 mtime 缓存：人工改文件后下一次读取即生效。
+const summaryCache = new Map();
+
+export function readToneSummary(dir = '') {
+  const file = toneSummaryPath(dir);
+  let mtime = 0;
+  try {
+    mtime = fs.statSync(file).mtimeMs;
+  } catch {
+    return '';
+  }
+  const hit = summaryCache.get(file);
+  if (hit && hit.mtime === mtime) return hit.text;
+  let text = '';
+  try {
+    text = fs.readFileSync(file, 'utf8').replace(/^\uFEFF/, '').trim();
+  } catch {
+    text = '';
+  }
+  summaryCache.set(file, { mtime, text });
+  return text;
+}
+
+function labelOf(fact = {}) {
+  return String(fact.label || fact.topic || fact.value || '').replace(/^[a-z]+:/i, '').slice(0, 12);
+}
+
+/**
+ * 把「被改变」聚合成一句稳定的语气倾向（不是记忆条目）。
+ * 只用最近 `tone.summaryRecentDays` 天、|emo| ≥ strongEmotion 的 active 事实；
+ * 没有这类事实时返回空串（调用方保留旧文件，不写空）。
+ */
+export function buildToneSummary(facts = [], { cfg = V10_DEFAULTS, now = Date.now() } = {}) {
+  const tone = cfg.tone || V10_DEFAULTS.tone;
+  const days = Number(tone.summaryRecentDays) || 7;
+  const strong = Number(cfg.strongEmotion) || 0.7;
+  const recent = (facts || []).filter((f) => {
+    if (!f) return false;
+    if (f.status && f.status !== 'active') return false;
+    if (Math.abs(Number(f.emo) || 0) < strong) return false;
+    const lastAt = Number(f.lastAt) || 0;
+    return lastAt > 0 && now - lastAt <= days * DAY;
+  });
+  if (!recent.length) return '';
+  const negative = recent.filter((f) => Number(f.emo) < 0).length;
+  const positive = recent.length - negative;
+  const scenes = new Map();
+  for (const f of recent) {
+    for (const s of Array.isArray(f.scene) ? f.scene : []) scenes.set(String(s), (scenes.get(String(s)) || 0) + 1);
+  }
+  const sceneTop = [...scenes.entries()].sort((a, b) => b[1] - a[1]).slice(0, 2).map(([s]) => s);
+  // 只有 1–2 条时说「聊得多」不准确，换成「有几次情绪起伏」
+  const head = recent.length >= 3 ? `最近 ${days} 天聊得多` : `最近 ${days} 天有 ${recent.length} 次情绪起伏`;
+  const mood = negative >= positive
+    ? `${head}，情绪偏沉（${negative}/${recent.length}）`
+    : `${head}，情绪不错（${positive}/${recent.length}）`;
+  const parts = [mood];
+  if (sceneTop.length) parts.push(`常谈到${sceneTop.join('、')}`);
+  const worst = recent.filter((f) => Number(f.emo) < 0).sort((a, b) => Math.abs(Number(b.emo)) - Math.abs(Number(a.emo)))[0];
+  if (worst) parts.push(`提到「${labelOf(worst)}」时语气沉，记得放轻一点`);
+  let text = `${parts.join('；')}。`;
+  const maxChars = Math.min(400, Number(tone.summaryMaxChars) || 200);
+  if (text.length > maxChars) text = `${text.slice(0, Math.max(0, maxChars - 1))}…`;
+  return text;
+}
+
+/** 写摘要：内容没变不动文件；变了先备份旧文件（保留 keep 份）再原子替换。 */
+export function writeToneSummary(dir = '', text = '', { keep = 5, now = Date.now() } = {}) {
+  const file = toneSummaryPath(dir);
+  const body = String(text || '').trim();
+  if (!body) return { written: false, chars: 0, backup: '' };
+  const prev = readToneSummary(dir);
+  if (prev === body) return { written: false, chars: body.length, backup: '' };
+  let backup = '';
+  try {
+    fs.accessSync(file);
+    const stamp = new Date(now).toISOString().replace(/[-:]/g, '').replace(/\..*$/, '').replace('T', '-');
+    // 同一秒内可能连写两次：重名时加 -2/-3，否则后一次会把前一次的备份覆盖掉
+    let dest = `${file}.bak-${stamp}`;
+    for (let n = 2; fs.existsSync(dest); n += 1) dest = `${file}.bak-${stamp}-${n}`;
+    backup = dest;
+    fs.copyFileSync(file, dest);
+    const old = fs.readdirSync(path.dirname(file))
+      .filter((n) => n.startsWith('profile-tone.md.bak-'))
+      .sort()
+      .reverse();
+    for (const name of old.slice(Math.max(1, keep))) {
+      try {
+        fs.unlinkSync(path.join(path.dirname(file), name));
+      } catch {
+        /* 清理旧备份失败不影响写入 */
+      }
+    }
+  } catch {
+    backup = '';
+  }
+  const tmp = `${file}.tmp-${process.pid}`;
+  fs.writeFileSync(tmp, `${body}\n`, 'utf8');
+  fs.renameSync(tmp, file);
+  summaryCache.delete(file);
+  return { written: true, chars: body.length, backup };
+}
+
+/** 注入用的一行（≤ summaryInjectMaxChars）；开关关闭或文件为空时返回 ''。 */
+export function toneSummaryLine(dir = '', cfg = V10_DEFAULTS) {
+  if (!cfg || cfg.enabled !== true || cfg.toneSummary !== true) return '';
+  const text = readToneSummary(dir);
+  if (!text) return '';
+  const toneCfg = cfg.tone || V10_DEFAULTS.tone;
+  const days = Number(toneCfg.summaryRecentDays) || 7;
+  // 摘要说的是「最近 N 天」，放太久就不该再冒充近况（人工改过文件会刷新 mtime）
+  try {
+    const st = fs.statSync(toneSummaryPath(dir));
+    if (Date.now() - st.mtimeMs > days * 2 * DAY) return '';
+  } catch {
+    return '';
+  }
+  const max = Math.min(200, Number(toneCfg.summaryInjectMaxChars) || 120);
+  const prefix = '〔语气备忘〕';
+  const bodyMax = Math.max(1, max - prefix.length); // 上限算上「〔语气备忘〕」本身
+  const flat = text.replace(/\s+/g, ' ').trim();
+  const body = flat.length > bodyMax ? `${flat.slice(0, Math.max(0, bodyMax - 1))}…` : flat;
+  return `${prefix}${body}`;
 }

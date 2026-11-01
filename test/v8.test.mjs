@@ -61,9 +61,16 @@ test('classify：硬事实带 quote 与归一主题', () => {
 });
 
 test('classify：备注类带 quote，topic 跟 sig 走', () => {
+  // 抽取B 起：「记住我不吃香菜」命中偏好，落成 pref 主题（偏好对象可被检索/干扰计算）
   const { candidates } = classify('记住我不吃香菜');
   assert.equal(candidates.length, 1);
   assert.ok(candidates[0].quote.includes('香菜'));
+  assert.ok(candidates[0].topic.startsWith('user:pref:'));
+});
+
+test('classify：普通叮嘱仍是备注，topic 跟 sig 走', () => {
+  const { candidates } = classify('记住那把备用钥匙在抽屉里');
+  assert.equal(candidates.length, 1);
   assert.ok(candidates[0].topic.startsWith('user:note:'));
 });
 

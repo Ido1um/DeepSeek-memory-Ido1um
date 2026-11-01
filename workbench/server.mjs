@@ -18,6 +18,7 @@ import { describe, normalizeConfig as normalizeScoring } from '../src/score.mjs'
 import { resolveDataDir, DEFAULT_DATA_DIR } from '../src/paths.mjs';
 import * as longterm from '../src/longterm.mjs';
 import * as cardMod from '../src/card.mjs';
+import * as v10 from '../src/v10.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const PUBLIC = path.join(HERE, 'public');
@@ -120,6 +121,33 @@ const sizeOf = (p) => {
 };
 const listDir = (p) => { try { return fs.readdirSync(p); } catch { return [] }; };
 const dedupe = (a) => [...new Set(a)];
+
+/**
+ * 写入门观测（v9.9）：从 logs/scoring.log 末尾取带 blocked 的记录，
+ * 汇总今天各原因的条数与最近样例。只读，不写数据目录。
+ */
+function readBlockedStats(dataDir, limit = 8) {
+  const out = { today: 0, total: 0, byReason: {}, lastAt: 0, recent: [] };
+  const tail = tailBytes(path.join(dataDir, 'logs', 'scoring.log'), 600_000);
+  if (!tail) return out;
+  const dayStart = new Date();
+  dayStart.setHours(0, 0, 0, 0);
+  const start = dayStart.getTime();
+  for (const line of tail.split(/\r?\n/)) {
+    if (!line.trim()) continue;
+    let row;
+    try { row = JSON.parse(line); } catch { continue; }
+    if (!Array.isArray(row.blocked) || !row.blocked.length) continue;
+    const at = Date.parse(row.at) || 0;
+    out.total += row.blocked.length;
+    out.lastAt = Math.max(out.lastAt, at);
+    for (const r of row.blocked) out.byReason[r] = (out.byReason[r] || 0) + 1;
+    if (at >= start) out.today += row.blocked.length;
+    out.recent.push({ at, reasons: row.blocked, text: String(row.text || '').slice(0, 60) });
+  }
+  out.recent = out.recent.slice(-limit).reverse();
+  return out;
+}
 
 /* ---------------- state ---------------- */
 
@@ -315,6 +343,13 @@ function buildState() {
   // 事实必须走「事件流折叠」：tier/mention/expire/invalidate/manual 都是事件，
   // 直接读 fact 行会得到没有调档、没有作废的旧快照（之前就是这样：改了档位页面不变）。
   const facts = longterm.materialize(longterm.readEvents(dataDir).rows, longterm.readInvalidated(dataDir));
+  const scfg = normalizeScoring(desired.scoring || {});
+  // v10（识海启发）：开关放在数据目录 v10.json，热读；这里只做展示与受控修改。
+  let v10cfg = null;
+  try { v10cfg = v10.loadV10(dataDir); } catch { /* 配置坏了不影响页面 */ }
+  const toneSummary = (() => {
+    try { return { text: v10.readToneSummary(dataDir), path: v10.toneSummaryPath(dataDir) }; } catch { return { text: '', path: '' }; }
+  })();
   const invalidatedMap = readJson(path.join(dataDir, 'state', 'facts-invalidated.json'), {});
   const tierCount = { hard: 0, long: 0, general: 0, temp: 0 };
   for (const f of facts) if (tierCount[f.tier] !== undefined) tierCount[f.tier]++;
@@ -375,14 +410,33 @@ function buildState() {
     policyStates: POLICY_STATES,
     tokens: sessions.map((s) => ({ key: s.key, tokens: s.tokens, latest: s.latestTokens, threshold, pct: threshold ? +(100 * s.tokens / threshold).toFixed(1) : 0 })),
     facts: (() => {
-      const scfg = normalizeScoring(desired.scoring || {});
       const now = Date.now();
       return facts.map((f) => {
         let d = {};
         try { d = describe(f, now, scfg); } catch {}
-        return { ...f, tier: d.tier || f.tier, score: d.score ?? f.score ?? null, I: d.I ?? f.I, s: d.s ?? f.s, R: d.R ?? f.R, manual: Boolean(f.manual), invalidated: f.invalidated || invalidatedMap[f.id] || null };
+        // v10 指标：只读派生，不落库、不改分（D 细节 / E 情绪 / C 巩固 / Q 可信 / A 激活）
+        let v10row = null;
+        if (v10cfg && v10cfg.enabled) {
+          try {
+            const act = v10.activationOf(f, { query: '', facts, now, cfg: v10cfg });
+            const q = v10.qValueOf(f, { facts });
+            v10row = {
+              d: +v10.detailOf(f, v10cfg, now, facts).toFixed(3),
+              e: +v10.emotionOf(f, v10cfg, now).toFixed(3),
+              c: +v10.consolidationOf(f).toFixed(3),
+              a: +act.A.toFixed(1),
+              q: +q.toFixed(3),
+              qLevel: v10.qLevelOf(q, v10cfg),
+              qLabel: v10.qLabelOf(v10.qLevelOf(q, v10cfg), v10cfg),
+              frags: (f.fragments || []).length,
+            };
+          } catch { /* 单条算不出来不影响整页 */ }
+        }
+        return { ...f, tier: d.tier || f.tier, score: d.score ?? f.score ?? null, I: d.I ?? f.I, s: d.s ?? f.s, R: d.R ?? f.R, manual: Boolean(f.manual), invalidated: f.invalidated || invalidatedMap[f.id] || null, v10: v10row };
       });
     })(),
+    v10: v10cfg ? { cfg: v10cfg, tone: toneSummary } : null,
+    writeGate: { enabled: scfg.writeGate !== false, ...readBlockedStats(dataDir) },
     tiers: tierCount,
     health: {
       degraded, summaryFailed,
@@ -397,6 +451,38 @@ function buildState() {
 }
 
 /* ---------------- write ops ---------------- */
+
+const V10_EDITABLE = ['enabled', 'emit', 'rankInInject', 'recordRetrieved', 'toneResidue', 'toneSummary', 'matchTokens', 'salienceFloor'];
+
+/**
+ * 保存 v10 开关（数据目录 v10.json）：白名单字段、写前备份、原子替换。
+ * 引擎按 mtime 热读，不用重启桥接；写坏配置的风险由「只写 normalize 后的结果」兜住。
+ */
+function saveV10(body = {}) {
+  const { mem } = loadBridgeMemory();
+  const dataDir = dataDirOf(mem && mem.dir ? mem.dir : '');
+  const file = path.join(dataDir, 'v10.json');
+  const cur = readJson(file, {}) || {};
+  const next = { ...cur };
+  for (const k of V10_EDITABLE) {
+    if (!(k in body)) continue;
+    if (k === 'salienceFloor') {
+      const n = Number(body[k]);
+      next[k] = Number.isFinite(n) ? Math.max(0, Math.min(100, n)) : 0;
+    } else {
+      next[k] = Boolean(body[k]);
+    }
+  }
+  const normalized = v10.normalizeV10(next);
+  const bakDir = path.join(dataDir, 'backup');
+  fs.mkdirSync(bakDir, { recursive: true });
+  const stamp = new Date().toISOString().replace(/[-:]/g, '').replace(/\..+/, '').replace('T', '-');
+  if (fs.existsSync(file)) fs.copyFileSync(file, path.join(bakDir, `v10.json.bak-${stamp}`));
+  const tmp = `${file}.tmp-${process.pid}`;
+  fs.writeFileSync(tmp, JSON.stringify(normalized, null, 2) + '\n', 'utf8');
+  fs.renameSync(tmp, file);
+  return { savedAt: Date.now(), cfg: normalized };
+}
 
 function mergeScoring(patch) {
   const out = { ...DEFAULT_SCORING };
@@ -628,6 +714,7 @@ const routes = {
   'POST /api/apply': (body) => applyToBridge(body || {}),
   'POST /api/console-url': () => consoleUrl(),
   'POST /api/fact': (body) => factOp(body || {}),
+  'POST /api/v10': (body) => saveV10(body || {}),
   'POST /api/checkdir': (body) => checkDir(body || {}),
   'GET /api/card': (body, query) => cardPreview(query),
 };

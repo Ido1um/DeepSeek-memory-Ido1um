@@ -33,6 +33,9 @@ export const SCORING_DEFAULTS = Object.freeze({
   // v8 分类稳定度：不写的类走 halfLifeDays；pref 单独给 90 天
   classStability: { rule: null, persona: null, identity: null, event: null, task: null, pref: 90, note: null },
   suggestInvalidateAt: 3, // 3 次建议作废
+  // 写入门（src/gate.mjs）：抽出来的候选还要过一层「像不像值得长期记的东西」。
+  // 关掉就是旧行为（候选照写），用于回滚或排查。
+  writeGate: true,
 });
 
 export const SECOND = 1000;

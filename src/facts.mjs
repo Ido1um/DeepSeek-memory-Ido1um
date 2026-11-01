@@ -58,7 +58,14 @@ const PATTERNS = [
     implicitSubject: '你',
   },
   { key: 'skill', label: '在学', re: /(在学|正在学|开始学|学会|学习)/ },
-  { key: 'pet', label: '宠物', re: /(养了|养的|养只|养了只)/ },
+  { key: 'pet', label: '宠物', re: /(养了|养的|养只|养了只)/, multi: true },
+  {
+    // 明确偏好：只抽「动词 + 具体对象」，对象太长/是代词就不记
+    key: 'pref',
+    label: '偏好',
+    re: /(不喜欢|不爱吃|不吃|讨厌|受不了|爱吃|喜欢|最爱)/,
+    soft: true,
+  },
 ];
 
 const PUNCT = /[，。！？；、,.!?;:\n\r]/;
@@ -141,7 +148,26 @@ export function extractHardFacts(text = '') {
     let sub = subjectNear(s, start, end);
     if (!sub && p.implicitSubject) sub = SUBJECTS.find((x) => x.word === p.implicitSubject);
     if (!sub) continue;
-    const value = p.valueMode === 'before' ? valueBefore(s, start) : valueAfter(s, end);
+    let value = p.valueMode === 'before' ? valueBefore(s, start) : valueAfter(s, end);
+    let label = p.label;
+    if (p.key === 'pet') {
+      // 「养你还是养的起的」→ 会抓到「起的」这种动词碎片，先挡掉
+      value = value.replace(/^(只|条|个|只小|一条|一只)/, '').trim();
+      if (!value || value.length > 10) continue;
+      if (/^[起了得的了吧呢啊吗不没就好才]/.test(value)) continue;
+      if (/[的了吧呢吗什么怎么]/.test(value)) continue;
+    }
+    if (p.soft) {
+      // 偏好的取值：去掉「吃/喝/玩/看/打」这类泛动词，只留对象；
+      // 「不喜欢/讨厌」与「喜欢」分成两个主题，避免把反话记成正向。
+      const negative = /^(不|讨厌|受不了)/.test(m[0]);
+      label = negative ? '不喜欢' : '喜欢';
+      value = value.replace(/^(吃|喝|玩|看|买|用|打|做)/, '').trim();
+      // 代词、指示词、半天说不出对象、半句话都不记
+      if (!value || value.length > 10) continue;
+      if (/^(这|那|这么|那么|这样|那样|这个|那个|你|他|她|我|就|才|还|也|都|是|的|了)/.test(value)) continue;
+      if (/[吗呢吧什么怎么]/.test(value)) continue;
+    }
     if (!value || VERBY_VALUE.test(value)) continue;
     if (p.key === 'name' && sub.about === 'bot') {
       const around = s.slice(Math.max(0, start - 10), Math.min(s.length, end + 14));
@@ -149,11 +175,13 @@ export function extractHardFacts(text = '') {
     }
     out.push({
       key: p.key,
-      label: p.label,
+      label,
       subject: sub.word,
       about: sub.about,
-      pattern: p.label,
+      pattern: label,
       value,
+      soft: p.soft === true,
+      multi: p.multi === true,
       text: s.length > 80 ? s.slice(0, 80) : s,
     });
   }
@@ -176,8 +204,8 @@ export function detectSignals(text = '') {
 
 // 固定属性型事实：同一主题的多次陈述应当互相覆盖（v8 版本链）
 // 抽取器给的是中文 label（生日/名字/…），这里归一成稳定的英文 key 当主题。
-const ATTRIBUTE_PATTERNS = new Set(['birthday', 'name', 'nickname', 'residence', 'job']);
-const LABEL_TO_KEY = { 生日: 'birthday', 名字: 'name', 称呼: 'nickname', 住处: 'residence', 工作: 'job' };
+const ATTRIBUTE_PATTERNS = new Set(['birthday', 'name', 'nickname', 'residence', 'job', 'skill', 'pet']);
+const LABEL_TO_KEY = { 生日: 'birthday', 名字: 'name', 称呼: 'nickname', 住处: 'residence', 工作: 'job', 在学: 'skill', 宠物: 'pet' };
 
 /** 自指主语：这类主语不带进 sig/topic（保持老数据 `user:生日` 不变，免迁移）。 */
 const SELF_SUBJECTS = new Set(['我', '咱', '俺', '主人', '你']);

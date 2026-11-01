@@ -352,15 +352,28 @@ export function createMemoryEngine({
 
   function retrievalLines(query, cardText = '') {
     const q = String(query || '').trim();
-    if (!q) return [];
+    const cfg10 = v10.loadV10(dataDir());
+    // P2 阶段 D：语气摘要作为一行系统提示（开关关闭/文件为空时为空串）
+    let summaryLine = '';
+    try {
+      summaryLine = v10.toneSummaryLine(dataDir(), cfg10);
+    } catch {
+      summaryLine = '';
+    }
+    if (!q) return summaryLine ? [summaryLine] : [];
     let rows = [];
     try {
-      rows = scoringRun.search({ query: q, limit: 6, dir: dataDir(), scoring: config().scoring }) || [];
+      rows = scoringRun.search({
+        query: q,
+        limit: 6,
+        dir: dataDir(),
+        scoring: config().scoring,
+        match: cfg10.matchTokens === true ? 'tokens' : 'substring'
+      }) || [];
     } catch {
       rows = [];
     }
     const seen = String(cardText || '');
-    const cfg10 = v10.loadV10(dataDir());
     const picked = rows
       .filter((r) => r && r.value && !seen.includes(String(r.value).slice(0, 12)))
       .filter((r) => v10.passesSalience(r, cfg10)) // v10：激活值低于 salienceFloor 的不投递
@@ -372,9 +385,41 @@ export function createMemoryEngine({
       /* 记账失败不影响注入 */
     }
     const showVague = cfg10.enabled === true && cfg10.emit === true;
-    return picked.map((r) =>
+    const lines = picked.map((r) =>
       showVague ? v10.renderFact(r, { cfg: cfg10 }) : `· [${r.tier}] ${String(r.value).slice(0, 60)}`
     );
+    // P2 阶段 C：情绪残留 → 末尾一句语气提示（不生成事实、不进卡、不参与打分）
+    if (cfg10.enabled === true && cfg10.toneResidue === true) {
+      try {
+        const rows = lt.readEvents(dataDir()).rows || [];
+        const facts = materialize(rows, lt.readInvalidated(dataDir()));
+        const lastByTopic = new Map();
+        for (const r of rows) {
+          if (!r || r.ev !== 'tone' || !r.topic) continue;
+          const at = Number(r.at) || 0;
+          const prev = lastByTopic.get(String(r.topic)) || 0;
+          if (at > prev) lastByTopic.set(String(r.topic), at);
+        }
+        const hint = v10.toneHintOf(facts, {
+          query: q,
+          cfg: cfg10,
+          now: Date.now(),
+          lastToneAt: (topic) => lastByTopic.get(String(topic)) || 0
+        });
+        if (hint) {
+          lines.push(hint.text);
+          try {
+            lt.appendEvent({ ev: 'tone', topic: hint.topic, at: Date.now(), by: 'inject' }, dataDir());
+          } catch {
+            /* 记不上不影响注入 */
+          }
+        }
+      } catch {
+        /* 语气提示失败不影响注入 */
+      }
+    }
+    if (summaryLine) lines.push(summaryLine);
+    return lines;
   }
 
   // ── 注入拼装：事实卡（按会话一次 / 更新后再注入）+ 交接摘要（按 consumedAt 一次） ─
@@ -560,13 +605,34 @@ export function createMemoryEngine({
         }
       }
 
+      // P2 阶段 D：人格语气摘要（profile-tone.md）。默认关；没有强情绪事件就保留旧文件。
+      let toneSummary = null;
+      try {
+        const cfg10 = v10.loadV10(dataDir());
+        if (cfg10.enabled === true && cfg10.toneSummary === true) {
+          const rows = lt.readEvents(dataDir()).rows || [];
+          const facts = materialize(rows, lt.readInvalidated(dataDir()));
+          const text = v10.buildToneSummary(facts, { cfg: cfg10, now });
+          if (text) {
+            const res = v10.writeToneSummary(dataDir(), text, { now });
+            toneSummary = { chars: res.chars, written: res.written, backup: res.backup };
+            log(`长期记忆：语气摘要已更新（${res.chars} 字${res.backup ? '，已备份旧文件' : ''}）`);
+          } else {
+            toneSummary = { chars: 0, skipped: true };
+            log('长期记忆：语气摘要跳过（最近没有强情绪事件）');
+          }
+        }
+      } catch (error) {
+        log(`长期记忆：语气摘要失败（${error?.message ?? error}）`);
+      }
+
       const doneAt = s.markDailyDone(now);
       if (lastDaily && now - lastDaily > 2 * DAY_MS) {
         log(`7 天记忆·补跑：上次日终 ${new Date(lastDaily).toISOString()}，已补跑一次（daily-catchup）`);
       }
       log(`7 天记忆·日终：${bounds.today} 已归档 ${archived} 个文件（保留 ${bounds.windowDays} 天：${bounds.startDay} 起），下次日终标记 ${new Date(doneAt).toISOString()}`);
       for (const key of listSessions()) void rotate(key, { reason: 'daily' });
-      return { ok: true, today: bounds.today, windowStart: bounds.startDay, archived, profile, scoring };
+      return { ok: true, today: bounds.today, windowStart: bounds.startDay, archived, profile, scoring, toneSummary };
     } catch (error) {
       log(`7 天记忆·日终日维护失败：${error?.message ?? error}`);
       return { ok: false, error: String(error?.message ?? error) };

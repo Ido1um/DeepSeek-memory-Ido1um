@@ -373,8 +373,10 @@
         <div class="row"><span class="k">日终 / 归档</span><span class="v" id="daily">—</span></div>
         <div class="row"><span class="k">日文件</span><span class="v" id="days">—</span></div>
         <div class="row"><span class="k">降级 / 摘要失败</span><span class="v" id="health">—</span></div>
+        <div class="row"><span class="k">写入门（v9.9）</span><span class="v" id="gate">—</span></div>
+        <div class="row"><span class="k">v10 识别</span><span class="v" id="v10line">—</span></div>
         <div class="row"><span class="k">数据体积 / 备份</span><span class="v" id="size">—</span></div>
-        <div class="foot">H/L/G/T = 强事实 / 长期 / 一般 / 临时。降级数来自 <span class="mono">memory-degraded</span> 日志。</div>
+        <div class="foot">H/L/G/T = 强事实 / 长期 / 一般 / 临时。降级数来自 <span class="mono">memory-degraded</span> 日志；写入门被挡原因来自 <span class="mono">logs/scoring.log</span> 的 <span class="mono">blocked</span>。</div>
       </div>
     </section>
 
@@ -438,6 +440,24 @@
         </div>
         <div class="mono dim" id="dirProbe" style="font-size:13px;margin-top:8px">—</div>
         <div class="foot">记忆文件（<span class="mono">profile.md</span>、<span class="mono">raw/</span>、<span class="mono">digests/</span>、<span class="mono">state/</span>、<span class="mono">logs/</span>）全部放在这个目录。改完先「测试」，再「保存目标配置」→「应用到线上」，重启桥接生效。</div>
+      </div>
+      <div class="card">
+        <h2>v10 实验开关 <span class="badge" id="v10Tag">—</span></h2>
+        <div class="ctl">
+          <label>细节/模糊措辞 emit</label><input type="checkbox" data-v10="emit">
+          <label>情绪语气提示 toneResidue</label><input type="checkbox" data-v10="toneResidue">
+          <label>语气备忘 toneSummary</label><input type="checkbox" data-v10="toneSummary">
+          <label>分词检索 matchTokens</label><input type="checkbox" data-v10="matchTokens">
+          <label>按激活值排序 rankInInject</label><input type="checkbox" data-v10="rankInInject">
+          <label>检索记账 recordRetrieved</label><input type="checkbox" data-v10="recordRetrieved">
+          <label>总开关 enabled</label><input type="checkbox" data-v10="enabled">
+          <label>注入门槛 salienceFloor</label><input type="number" data-v10="salienceFloor" min="0" max="100" step="5">
+        </div>
+        <div class="actions">
+          <button class="primary" onclick="saveV10()">保存 v10 开关（热生效）</button>
+        </div>
+        <div class="foot">写入数据目录的 <span class="mono">v10.json</span>（写前备份），引擎按 mtime 热读，<b>不用重启桥接</b>。关闭 <span class="mono">enabled</span> 即回到 v9 行为。写入门开关在 <span class="mono">scoring.writeGate</span>，属桥接配置，需要重启。</div>
+        <div class="dim mono" id="v10Tone" style="font-size:13px;margin-top:8px;white-space:pre-wrap">—</div>
       </div>
       <div class="card">
         <h2>目标配置 <span id="diffTag"></span></h2>
@@ -687,11 +707,23 @@ function render(s) {
   $('health').innerHTML = nz(s.health.degraded) + ' / ' + nz(s.health.summaryFailed);
   $('size').textContent = s.health.sizeMB + ' MB · ' + s.health.backups + ' 份';
 
+  // 写入门 + v10 概况（v9.9 / v10）
+  const g = s.writeGate || {};
+  const gReasons = Object.entries(g.byReason || {}).sort((a, b) => b[1] - a[1]).slice(0, 3);
+  $('gate').innerHTML = (g.enabled === false ? '<span class="tag inv">已关闭</span>' : '开') +
+    ' · 今日挡 ' + nz(g.today) + ' 条' +
+    (gReasons.length ? '（' + gReasons.map(([k, v]) => esc(k) + ' ' + v).join(' · ') + '）' : '') +
+    (g.lastAt ? ' · 最近 ' + ago(g.lastAt) : '');
+  $('gate').title = (g.recent || []).map((r) => `[${r.reasons.join(',')}] ${r.text}`).join('\n') || '还没有被挡的候选';
+  $('v10line').textContent = s.v10
+    ? `D/Q/E/C 已装 · ${s.v10.cfg.emit ? '会显模糊措辞' : '只记账不改文本'} · 门槛 ${s.v10.cfg.salienceFloor}`
+    : '未启用（无 v10.json）';
+
   // 事实表
   $('navFacts').textContent = s.facts.length;
   $('factBody').innerHTML = s.facts.length ? s.facts.map((f) => `
     <tr><td class="mono dim" title="${esc(f.id || '')}">${esc('#')}${esc((f.id || '').slice(-6))}</td>
-      <td>${esc(f.text || '')}</td>
+      <td>${esc(f.text || '')}${f.v10 ? `<div class="dim mono" style="font-size:12px;margin-top:4px" title="措辞：${esc(f.v10.qLabel || '')}">D ${f.v10.d} · Q ${f.v10.q}（${esc(f.v10.qLevel || '')}） · E ${f.v10.e} · C ${f.v10.c} · A ${f.v10.a}${f.v10.frags ? ' · 碎片 ' + f.v10.frags : ''}</div>` : ''}</td>
       <td><span class="tag ${esc(f.tier || '')}">${esc(f.tier || '?')}</span></td>
       <td class="num">${f.score ?? f.base ?? '—'}</td>
       <td class="edt"><select id="tier-${esc(f.id)}">${['hard', 'long', 'general', 'temp']
@@ -720,6 +752,24 @@ function render(s) {
   $('diffTag').innerHTML = s.diff.length ? `<span class="badge">${s.diff.length} 项未上线</span>` : '<span class="badge ok">与线上一致</span>';
   $('navDiff').textContent = s.diff.length ? s.diff.length : '';
   $('diffBadge').textContent = s.diff.length ? '目标 ≠ 线上：' + s.diff.join('、') : '';
+
+  // v10 实验开关（数据目录 v10.json，热生效）
+  const v10cfg = (s.v10 && s.v10.cfg) || null;
+  $('v10Tag').innerHTML = v10cfg
+    ? (v10cfg.enabled ? '<span class="badge ok">运行中</span>' : '<span class="badge">已关闭</span>')
+    : '<span class="badge">无配置</span>';
+  for (const el of document.querySelectorAll('[data-v10]')) {
+    if (document.activeElement === el) continue;
+    const k = el.dataset.v10;
+    if (el.type === 'checkbox') el.checked = Boolean(v10cfg && v10cfg[k]);
+    else el.value = v10cfg ? (v10cfg[k] ?? '') : '';
+  }
+  const tone = (s.v10 && s.v10.tone) || {};
+  $('v10Tone').textContent = v10cfg
+    ? (tone.text
+      ? '语气备忘（' + String(tone.text).length + ' 字）：' + String(tone.text).slice(0, 160) + (String(tone.text).length > 160 ? '…' : '')
+      : '语气备忘：还没有生成（日终在 toneSummary 开启后写 profile-tone.md）')
+    : 'v10 未配置：数据目录下没有 v10.json，按 v9 行为运行。';
 
   // 记忆方案
   const sc = s.scoring || {};
@@ -801,6 +851,19 @@ async function applyCardLen() {
 async function saveDesired() {
   try { await api('/api/config', collect()); toast('目标配置已保存'); await load(); }
   catch (e) { toast('保存失败：' + e.message); }
+}
+
+async function saveV10() {
+  const body = {};
+  for (const el of document.querySelectorAll('[data-v10]')) {
+    const k = el.dataset.v10;
+    body[k] = el.type === 'checkbox' ? el.checked : Number(el.value || 0);
+  }
+  try {
+    await api('/api/v10', body);
+    toast('v10 开关已保存到 v10.json，热生效（不用重启）');
+    await load();
+  } catch (e) { toast('保存失败：' + e.message); }
 }
 
 /* ---- 数据目录 + 控制台 ---- */

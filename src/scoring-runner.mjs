@@ -24,6 +24,7 @@ import {
   round2
 } from './score.mjs';
 import * as lt from './longterm.mjs';
+import { writeGate } from './gate.mjs';
 import { attrsOf, fragmentsOf, loadV10, normalizeV10, activationOf, qValueOf, qLevelOf, qLabelOf, detailOf, emotionOf, consolidationOf, interferenceOf, explain as v10Explain, passesSalience } from './v10.mjs';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -55,24 +56,53 @@ function shortHash(s) {
   return Math.abs(h).toString(36).slice(0, 6);
 }
 
+/** 备注的内容键：去掉「记住/别忘」和语气词后再哈希，换一种说法也能认成同一条。 */
+const NOTE_NOISE = /(记住|别忘记了|别忘记|别忘|不要忘|帮我记|记一下|记牢|提醒我)/g;
+function normalizeNote(text = '') {
+  return String(text || '')
+    .replace(NOTE_NOISE, '')
+    .replace(/[，。！？；、,.!?;:\s"'“”‘’（）()【】\[\]]/g, '')
+    .replace(/[吧呀啊哦呢哈嘛啦著着了]/g, '')
+    .replace(/[要得就还都也]/g, '')
+    .trim();
+}
+
+/** 日程/承诺类动作词：没有这些词就不当待办（避免「明天要吃饭」这种噪声）。 */
+const TASK_ACTION = /(交|考试|作业|报告|面试|开会|上课|值班|体检|去医院|报名|提交|答辩|汇报|见面|约好|截止|deadline|复习|预习)/i;
+
 /**
- * 一条入站文本值不值得记：抽硬事实；抽不到但明确说「记住」→ 记一条备注。
+ * 一条入站文本值不值得记：抽硬事实；抽不到但明确说「记住」→ 记一条备注；
+ * 再抽不到但有明确日期 + 动作 → 记一条待办。
  * @returns {{signals:object, candidates:Array}}
  */
 export function classify(text, cfg = SCORING_DEFAULTS, opts = {}) {
   const t = String(text ?? '').trim();
   const signals = detectSignals(t);
   const candidates = [];
-  if (!t || signals.question) return { signals, candidates };
+  if (!t) return { signals, candidates };
+  // 疑问句不当事实；但「记住…呢」是陈述式叮嘱，不该被问号规则误杀
+  if (signals.question && !(signals.explicitRemember && !/[？?]\s*$/.test(t))) {
+    return { signals, candidates };
+  }
 
   for (const f of signals.facts) {
     const about = f.about || 'user';
     const pattern = f.pattern || f.key || 'fact';
     const subject = f.subject || '';
-    const sig = sigOfSubject(about, pattern, subject);
+    const soft = f.soft === true;
+    const multi = f.multi === true && !soft;
+    const value = String(f.value || '').trim();
+    if ((soft || multi) && !value) continue;
+    const tag = subjectTag(subject);
+    const sig = soft || multi ? sigOfSubject(about, pattern, subject) + `:${value}` : sigOfSubject(about, pattern, subject);
+    const topic = soft
+      ? `${about}:${tag ? `${tag}:` : ''}pref:${f.label || '偏好'}:${value}`
+      : multi
+        ? `${about}:${tag ? `${tag}:` : ''}${f.key || pattern}:${value}`
+        : topicOf(t, { about, subject, pattern, sig });
     candidates.push({
       sig,
-      topic: topicOf(t, { about, subject, pattern, sig }),
+      topic,
       about,
       subject,
       pattern,
@@ -80,18 +110,24 @@ export function classify(text, cfg = SCORING_DEFAULTS, opts = {}) {
       value: f.value || '',
       text: t.slice(0, 200),
       quote: t.slice(0, 200),
-      class: classOf(t, { hard: true }),
-      tier: 'hard',
-      I: 1
+      // 偏好是「喜欢什么」不是硬事实：走 general 档、pref 类，靠复习慢慢升
+      class: soft ? 'pref' : classOf(t, { hard: true }),
+      tier: soft ? 'general' : 'hard',
+      // 偏好平时 0.6；明确说「记住」说明在意，抬到备注级
+      I: soft ? (signals.explicitRemember ? importanceOf({ explicitRemember: true }, cfg) : 0.6) : 1
     });
   }
 
   if (!candidates.length && signals.explicitRemember) {
     const about = 'user';
     const due = parseDue(t); // 「下下个星期一要交…」→ 2026-11-09；解不出就保持普通备注
-    const sig = sigOf(about, 'note', shortHash(t));
+    const core = normalizeNote(t);
+    const basis = `${core.length >= 4 ? core : t}${due && due.due ? `|${due.due}` : ''}`;
+    const sig = sigOf(about, 'note', shortHash(basis));
+    const legacySig = sigOf(about, 'note', shortHash(t));
     candidates.push({
       sig,
+      legacySig: legacySig !== sig ? legacySig : undefined,
       topic: topicOf(t, { about, pattern: 'note', sig }),
       about,
       pattern: 'note',
@@ -104,6 +140,33 @@ export function classify(text, cfg = SCORING_DEFAULTS, opts = {}) {
       I: importanceOf({ explicitRemember: true }, cfg),
       ...(due ? { task: true, due: due.due, dueAt: due.dueAt, duePhrase: due.phrase } : {})
     });
+  }
+
+  // 没明说「记住」、但有明确日期和动作（「周三要交报告」「下周一面试」）→ 直接记待办
+  if (!candidates.length) {
+    const due = parseDue(t);
+    if (due && due.dueAt && TASK_ACTION.test(t)) {
+      const about = 'user';
+      const core = t.replace(/^(记住|别忘了|提醒我)/, '').trim().slice(0, 60);
+      const sig = sigOf(about, 'task', shortHash(normalizeNote(core) + `|${due.due}`));
+      candidates.push({
+        sig,
+        topic: `${about}:task:${due.due}`,
+        about,
+        pattern: 'task',
+        label: '待办',
+        value: core,
+        text: t.slice(0, 200),
+        quote: t.slice(0, 200),
+        class: 'task',
+        tier: 'general',
+        I: importanceOf({ explicitRemember: true }, cfg),
+        task: true,
+        due: due.due,
+        dueAt: due.dueAt,
+        duePhrase: due.phrase
+      });
+    }
   }
 
   // v10：候选补轻量属性与原文片段（关闭时不给候选加字段，事件流逐字节不变）
@@ -151,9 +214,27 @@ export function recordInbound({ key = '', text = '', ts = Date.now(), scoring, d
 
   const added = [];
   const mentioned = [];
+  const blocked = [];
+  // 同值归并：偏好/备注换了个说法但说的仍是同一件事（爱吃火锅 → 最爱火锅），
+  // 不该再开一条新事实，记成对已有那条的一次提及。
+  const byValue = new Map();
+  for (const f of active.values()) {
+    if (f.class !== 'pref' && f.class !== 'note') continue;
+    const k = `${f.about}|${f.class}|${String(f.value || '').trim()}`;
+    if (!byValue.has(k)) byValue.set(k, f);
+  }
 
   for (const c of candidates) {
-    const prior = active.get(c.sig);
+    const gate = writeGate(text, c, { cfg });
+    if (!gate.ok) {
+      blocked.push({ sig: c.sig, reason: gate.reason, value: String(c.value || '').slice(0, 40) });
+      continue;
+    }
+    // 老备注用的是整句哈希；新规则用「去噪后的内容 + 日期」，第一次换用新键时要认回老事实
+    let prior = active.get(c.sig) || (c.legacySig ? active.get(c.legacySig) : null);
+    if (!prior && (c.class === 'pref' || c.class === 'note')) {
+      prior = byValue.get(`${c.about || 'user'}|${c.class}|${String(c.value || '').trim()}`) || null;
+    }
     if (prior) {
       const gain = mentionGain(prior, ts, cfg);
       const next = applyMention(prior, ts, { cfg });
@@ -246,11 +327,12 @@ export function recordInbound({ key = '', text = '', ts = Date.now(), scoring, d
     cand: candidates.length,
     added: added.length,
     mentioned: mentioned.length,
+    ...(blocked.length ? { blocked: blocked.map((b) => b.reason) } : {}),
     ids: [...added.map((r) => r.id), ...mentioned.map((r) => r.id)],
     text
   });
 
-  return { mode, added, mentioned, signals };
+  return { mode, added, mentioned, blocked, signals };
 }
 
 /** 观测日志：每收到一条消息追加一行到 <dir>/logs/scoring.log（出问题靠它复盘）。 */
@@ -265,6 +347,7 @@ function logLine(dir, row) {
       cand: row.cand || 0,
       added: row.added || 0,
       mentioned: row.mentioned || 0,
+      ...(Array.isArray(row.blocked) && row.blocked.length ? { blocked: row.blocked } : {}),
       ids: row.ids || [],
       text: String(row.text || '').replace(/\s+/g, ' ').slice(0, 80)
     };
@@ -325,10 +408,39 @@ export function settle({ now = Date.now(), scoring, dir = '' } = {}) {
 }
 
 /**
+ * 长句检索用的切词：中文按二元组、英文/数字按单词；丢掉常见虚词二元组，
+ * 避免「今天怎么样」这种整句把一堆事实都捞出来。
+ */
+const STOP_TOKENS = new Set([
+  '今天', '明天', '昨天', '现在', '刚才', '然后', '就是', '这个', '那个', '什么', '怎么',
+  '可以', '一个', '我们', '你们', '他们', '还是', '因为', '所以', '但是', '如果', '时候',
+  '感觉', '真的', '不是', '没有', '知道', '觉得', '这样', '那样', '一下', '已经', '可能',
+  '应该', '需要', '自己', '出来', '起来', '回来', '过来', '下来', '还是', '有点', '一样'
+]);
+
+export function tokensOf(query = '') {
+  const s = String(query || '').trim();
+  if (!s) return [];
+  const out = new Set();
+  for (const part of s.replace(/[^\p{L}\p{N}]+/gu, ' ').split(/\s+/)) {
+    if (!part) continue;
+    if (/^[a-z0-9]+$/i.test(part)) {
+      if (part.length >= 2) out.add(part.toLowerCase());
+      continue;
+    }
+    for (let i = 0; i < part.length - 1; i += 1) {
+      const tk = part.slice(i, i + 2);
+      if (!STOP_TOKENS.has(tk)) out.add(tk);
+    }
+  }
+  return [...out];
+}
+
+/**
  * 检索：档位优先（hard → long → general → temp），同档按分数；默认过滤作废/过期。
  * @returns {Array} describe() 结果 + text
  */
-export function search({ query = '', limit = 5, now = Date.now(), scoring, includeInvalidated = false, facts: provided, dir = '', includeHistory = false, recordRetrieved: recordOpt = false, recordBy = 'search' } = {}) {
+export function search({ query = '', limit = 5, now = Date.now(), scoring, includeInvalidated = false, facts: provided, dir = '', includeHistory = false, recordRetrieved: recordOpt = false, recordBy = 'search', match = 'substring' } = {}) {
   const cfg = normalizeScoring(scoring);
   // limit<=0 表示“不要结果”，而不是悄悄回退成默认条数
   const want = Number(limit);
@@ -339,12 +451,18 @@ export function search({ query = '', limit = 5, now = Date.now(), scoring, inclu
     : lt.readEvents(dir).rows;
   const source = Array.isArray(provided) ? provided : lt.materialize(eventsIn, lt.readInvalidated(dir));
   const facts = source.filter((f) => includeInvalidated || f.status === 'active');
+  // match='tokens'：整句切成二元组，任一词命中即可（真实聊天是整句话，substring 几乎匹配不到）
+  const tokens10 = q && match === 'tokens' ? tokensOf(q) : null;
+  // 切不出二元组的超短查询（「鱼」「嗯」）回退 substring，避免 tokens 模式反而查不到
+  const hitTokens = tokens10 && tokens10.length ? tokens10 : null;
   const ranked = facts
     .map((f) => {
       const d = { ...describe(f, now, cfg), id: f.id, status: f.status, label: f.label, text: f.text, sig: f.sig, about: f.about, value: f.value, pattern: f.pattern, topic: f.topic || '', quote: f.quote || '', lastAt: f.lastAt || 0, versions: Number(f.versions) || 1, accessCount: Number(f.accessCount) || 0, lastRetrievedAt: Number(f.lastRetrievedAt) || 0, emo: Number(f.emo) || 0, rel: Number(f.rel) || 0, scene: Array.isArray(f.scene) ? f.scene : [], fragments: Array.isArray(f.fragments) ? f.fragments : [] };
-      // 命中判定：值/原文/标签/sig/模式，任一包含关键词即可
+      // 命中判定：值/原文/标签/sig/模式，任一包含关键词即可；tokens 模式按词命中
       const hit = q
-        ? [f.text, f.value, f.label, f.sig, f.pattern].some((s) => String(s ?? '').includes(q))
+        ? (hitTokens
+          ? hitTokens.some((tk) => [f.text, f.value, f.label, f.sig, f.pattern].some((s) => String(s ?? '').includes(tk)))
+          : [f.text, f.value, f.label, f.sig, f.pattern].some((s) => String(s ?? '').includes(q)))
         : false;
       const tierRank = { hard: 4, long: 3, general: 2, temp: 1 }[f.tier] || 0;
       // v8 反自强化：被判定「无关」2 次以上的事实检索降权（不删、可恢复）
@@ -411,8 +529,11 @@ function recordRetrieved(rows, { dir = '', now = Date.now(), by = 'search' } = {
     const last = Number(r.lastRetrievedAt) || 0;
     if (last && sameLocalDay(last, now)) continue;
     try {
-      lt.appendEvent({ ev: 'retrieved', id: r.id, at: now, by }, dir);
+      // 带上这次命中里线索触发（cue）的分值，便于回看「为什么想起」
+      const cue = Number(r.activationParts && r.activationParts.cue) || 0;
+      lt.appendEvent({ ev: 'retrieved', id: r.id, at: now, by, cue }, dir);
       r.lastRetrievedAt = now;
+      r.lastCue = cue;
       r.accessCount = (Number(r.accessCount) || 0) + 1;
     } catch {
       /* 记不上不影响检索结果 */

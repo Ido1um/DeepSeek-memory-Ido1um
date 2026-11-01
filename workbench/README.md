@@ -141,3 +141,10 @@ $env:WORKBENCH_PORT='7352'   # 换端口
 ## apply 前的目录体检
 
 `POST /api/apply` 先看目标目录：空目录放行（全新安装），已有 `profile.md`/`state/`/`rules.md`/`raw/` 放行；明显不是记忆目录（非空且没有这些）返回 400，确认后加 `{"force": true}` 才强制；磁盘根目录直接拒。写之前仍会备份桥接 config 到 `workbench/backup/`。
+
+## v10 指标 + 写入门观测（2026-11-01 同步）
+- **长期事实表**：每条事实的正文下面多一行小字 `D 细节 · Q 可信（档）· E 情绪残留 · C 巩固 · A 激活值`，碎片数也随之显示。数值是**只读派生**（`src/v10.mjs` 纯函数），不落库、不改分。
+- **记忆库 → 写入门（v9.9）**：显示开关状态、今天被挡条数、前三种原因与最近一次时间；鼠标悬停可看最近 8 条被挡的候选（原因码 + 原文 60 字）。数据来自 `logs/scoring.log` 的 `blocked` 字段，只读。
+- **记忆库 → v10 识别**：显示 D/Q/E/C 是否已装、当前是否显示模糊措辞、注入门槛 `salienceFloor`。
+- **调控台 → v10 实验开关**：`enabled` / `emit` / `toneResidue` / `toneSummary` / `matchTokens` / `rankInInject` / `recordRetrieved` / `salienceFloor` 八项，保存到**数据目录**的 `v10.json`（写前备份到 `backup/`，`tmp + rename` 原子替换），引擎按 mtime 热读，**不用重启桥接**。下方预览 `profile-tone.md` 的语气备忘。
+- 写入门开关 `scoring.writeGate` 属桥接配置，页面只读提示（改它需要「应用到线上」并重启桥接）。
