@@ -58,7 +58,7 @@ function shortHash(s) {
 
 /** 备注的内容键：去掉「记住/别忘」和语气词后再哈希，换一种说法也能认成同一条。 */
 const NOTE_NOISE = /(记住|别忘记了|别忘记|别忘|不要忘|帮我记|记一下|记牢|提醒我)/g;
-function normalizeNote(text = '') {
+export function normalizeNote(text = '') {
   return String(text || '')
     .replace(NOTE_NOISE, '')
     .replace(/[，。！？；、,.!?;:\s"'“”‘’（）()【】\[\]]/g, '')

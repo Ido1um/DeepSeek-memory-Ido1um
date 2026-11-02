@@ -19,6 +19,7 @@ import { resolveDataDir, DEFAULT_DATA_DIR } from '../src/paths.mjs';
 import * as longterm from '../src/longterm.mjs';
 import * as cardMod from '../src/card.mjs';
 import * as v10 from '../src/v10.mjs';
+import * as extractModel from '../src/extract-model.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const PUBLIC = path.join(HERE, 'public');
@@ -437,6 +438,14 @@ function buildState() {
     })(),
     v10: v10cfg ? { cfg: v10cfg, tone: toneSummary } : null,
     writeGate: { enabled: scfg.writeGate !== false, ...readBlockedStats(dataDir) },
+    extract: (() => {
+      try {
+        return {
+          cfg: extractModel.normalizeExtract((desired && desired.extract) || {}),
+          shadow: extractModel.summarizeShadow(dataDir, { now: Date.now(), days: 7, recent: 12 }),
+        };
+      } catch (e) { return { cfg: null, shadow: null, error: String((e && e.message) || e) }; }
+    })(),
     tiers: tierCount,
     health: {
       degraded, summaryFailed,

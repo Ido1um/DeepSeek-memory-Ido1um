@@ -10,6 +10,7 @@ import * as policy from './policy.mjs';
 import * as token from './token.mjs';
 import { paths, readInvalidated, readJsonl, readShadow, readShadowStats } from './longterm.mjs';
 import { unknownScoringKeys } from './score.mjs';
+import { storageReport, summarizeStorage } from './storage.mjs';
 
 function check(name, ok, detail = '') {
   return { name, ok: Boolean(ok), detail: String(detail || '') };
@@ -107,6 +108,15 @@ export function checkDataDir(dir, { config = {}, modelWindow = 0 } = {}) {
   const unknownKeys = unknownScoringKeys(config.scoring || {});
   checks.push(check('打分配置无未知键', unknownKeys.length === 0, unknownKeys.length ? unknownKeys.join(', ') : 'ok'));
 
+  // 6) 数据体积与磁盘（只告警不删除；超阈值算 ✗ 让人看见，但不影响解析类检查）
+  let storage = null;
+  try {
+    storage = storageReport({ dir, storage: config.storage || config.memory?.storage });
+    checks.push(check('数据体积与磁盘', storage.level === 'ok', summarizeStorage(storage) + (storage.alerts.length ? ` · ${storage.alerts.join(' ')}` : '')));
+  } catch (e) {
+    checks.push(check('数据体积与磁盘', false, `检查失败：${e?.message || e}`));
+  }
+
   const shadowStats = readShadowStats();
   const failed = checks.filter((c) => !c.ok);
   return {
@@ -118,6 +128,7 @@ export function checkDataDir(dir, { config = {}, modelWindow = 0 } = {}) {
     window: win,
     policy: states,
     invalidated: tombIds.length,
+    storage,
     shadow: { rows: readShadow().rows.length, stats: shadowStats }
   };
 }

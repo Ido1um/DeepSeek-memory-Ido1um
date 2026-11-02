@@ -148,3 +148,9 @@ $env:WORKBENCH_PORT='7352'   # 换端口
 - **记忆库 → v10 识别**：显示 D/Q/E/C 是否已装、当前是否显示模糊措辞、注入门槛 `salienceFloor`。
 - **调控台 → v10 实验开关**：`enabled` / `emit` / `toneResidue` / `toneSummary` / `matchTokens` / `rankInInject` / `recordRetrieved` / `salienceFloor` 八项，保存到**数据目录**的 `v10.json`（写前备份到 `backup/`，`tmp + rename` 原子替换），引擎按 mtime 热读，**不用重启桥接**。下方预览 `profile-tone.md` 的语气备忘。
 - 写入门开关 `scoring.writeGate` 属桥接配置，页面只读提示（改它需要「应用到线上」并重启桥接）。
+
+## 长期事实表的响应式（2026-11-02）
+- 列宽按 8 / 34 / 9 / 7 / 27 / 15 分配，`table-layout:fixed` + 内容列 `overflow-wrap:anywhere`，长句只在内容列内换行，不会把「档 / 分 / 调档」挤出去。
+- 调档与作废控件装在内层 `.edtctl` / `.actctl` 容器里：空间不够时在各自单元格内换行，`td` 保持 `table-cell`，不会出现整行被拆散或按钮飘到下一行之外。
+- 断点：≤1100px 收紧单元格留白与控件宽度；≤900px 缩小 id/标签字号；≤760px 整表切成「一行一张卡片」（隐藏表头，每行用 `data-l` 显示字段名）。
+- 已在 1256 / 1180 / 1024 / 940 / 900 / 820 / 768 / 760 / 430 / 390 宽度下量过：页面无横向溢出、表头与单元格中心差 ≤2px、单元格无内部溢出。

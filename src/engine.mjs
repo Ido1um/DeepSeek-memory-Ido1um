@@ -38,6 +38,7 @@ import * as due from './due.mjs';
 import * as inject from './inject.mjs';
 import * as rules from './rules.mjs';
 import * as v10 from './v10.mjs';
+import * as extractModel from './extract-model.mjs';
 import { memorySection } from './config.mjs';
 
 const DAY_MS = 86400000;
@@ -66,7 +67,9 @@ const DEFAULTS = {
   // overdueHours：过了截止还留多久提醒（0=老行为，过点即静默）
   reminders: { enabled: true, horizonHours: 24, graceHours: 12, overdueHours: 72 },
   // v8 批 3：四段注入预算（默认关，先影子对比再开）
-  inject: inject.normalizeInject({})
+  inject: inject.normalizeInject({}),
+  // 2.1：模型抽取（默认关；影子先跑，modelWrite 才写事件）
+  extract: extractModel.normalizeExtract({})
 };
 
 function normalizeConfig(raw) {
@@ -104,7 +107,8 @@ function normalizeConfig(raw) {
     },
     // 打分：mode 默认 shadow（只采样不写入），改成 write 才动 longterm.jsonl。
     scoring: scoringRun.normalizeScoring(c.scoring),
-    inject: inject.normalizeInject(c.inject)
+    inject: inject.normalizeInject(c.inject),
+    extract: extractModel.normalizeExtract(c.extract)
   };
 }
 
@@ -556,6 +560,18 @@ export function createMemoryEngine({
         }
       } catch (error) {
         log(`记忆结算失败：${error?.message ?? error}`);
+      }
+
+      // 2.1：模型抽取（只产候选；默认只写影子，modelWrite 才落事件）
+      let extract = null;
+      if (c.extract?.enabled === true) {
+        try {
+          const ownerKey = typeof host.getOwnerKey === 'function' ? host.getOwnerKey() : '';
+          extract = await extractModel.runModelExtract({ now, dir: dataDir(), cfg: c.extract, scoring: c.scoring, ownerKey, log });
+          log(`记忆抽取·${c.extract.modelWrite ? '写入' : '影子'}：候选 ${extract.candidates}，通过 ${extract.passed}，写入 ${extract.written}`);
+        } catch (error) {
+          log(`记忆抽取失败（不影响日终）：${error?.message ?? error}`);
+        }
       }
 
       // 事实卡：write/投影模式 → 从长期库投影并备份；否则仍走模型摘要。

@@ -16,12 +16,10 @@ import { fileURLToPath } from 'node:url';
 
 import { loadSearchConfig, resolveSearchApiKey } from './config.mjs';
 import { recentMessages, windowBounds } from './store.mjs';
+import { DEFAULT_MAX_OUTPUT_CHARS, DEFAULT_TIMEOUT_MS, requestModel } from './model.mjs';
 
 
-const DEFAULT_BASE_URL = 'https://api.deepseek.com/anthropic/v1';
-const DEFAULT_TIMEOUT_MS = 30000;
 const DEFAULT_MAX_INPUT_CHARS = 30000;
-const DEFAULT_MAX_OUTPUT_CHARS = 1800;
 
 const SYSTEM_PROMPT = [
   '你是 QQ 聊天记录的交接摘要器。用户和机器人「助手」刚结束一段会话，现在要换到新会话继续聊。',
@@ -71,61 +69,6 @@ function buildTranscript(key, maxInputChars, { sinceMs = 0 } = {}) {
     used += line.length + 1;
   }
   return { text: lines.join('\n'), count: lines.length };
-}
-
-/**
- * 调一次模型，返回 { ok, text, model, source, error }；失败不抛异常。
- * 两条摘要/事实卡共用这一个入口，保证 key 解析、超时、兼容端点只有一份实现。
- */
-async function requestModel({ system, userContent, maxChars, timeoutMs = DEFAULT_TIMEOUT_MS }) {
-  const searchConfig = loadSearchConfig();
-  const { key: apiKey, source } = resolveSearchApiKey(searchConfig);
-  if (!apiKey) return { ok: false, error: '没有可用的 DeepSeek API key（config.webSearch.apiKey / DEEPSEEK_API_KEY / DSH 凭据）' };
-
-  const baseURL = String(searchConfig.baseURL || DEFAULT_BASE_URL).replace(/\/+$/, '');
-  const budget = Math.min(4000, Math.max(300, Number(maxChars) || DEFAULT_MAX_OUTPUT_CHARS));
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), Math.max(5000, Number(timeoutMs) || DEFAULT_TIMEOUT_MS));
-  try {
-    const res = await fetch(`${baseURL}/messages`, {
-      method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        'x-api-key': apiKey,
-        'anthropic-version': '2023-06-01'
-      },
-      body: JSON.stringify({
-        model: searchConfig.model,
-        max_tokens: 4000,
-        // 关闭思考：否则长 transcript 下 thinking 会把 max_tokens 吃光，返回里只有 thinking 没有 text。
-        thinking: { type: 'disabled' },
-        system,
-        messages: [{ role: 'user', content: userContent }]
-      }),
-      signal: controller.signal
-    });
-    if (!res.ok) {
-      const body = await res.text().catch(() => '');
-      return { ok: false, error: `HTTP ${res.status} ${String(body).replace(/\s+/g, ' ').slice(0, 200)}` };
-    }
-    const data = await res.json().catch(() => null);
-    const text = (Array.isArray(data?.content) ? data.content : [])
-      .filter((block) => block?.type === 'text')
-      .map((block) => String(block.text ?? ''))
-      .join('\n')
-      .trim();
-    if (!text) {
-      const kinds = (Array.isArray(data?.content) ? data.content : []).map((b) => b?.type).filter(Boolean).join(',') || '空';
-      const stop = data?.stop_reason ? `，stop_reason=${data.stop_reason}` : '';
-      return { ok: false, error: `模型没有返回文本（blocks=${kinds}${stop}）` };
-    }
-    return { ok: true, text: text.slice(0, budget), model: searchConfig.model, source };
-  } catch (error) {
-    const name = error?.name;
-    return { ok: false, error: name === 'AbortError' ? `摘要超时（${timeoutMs}ms）` : String(error?.message ?? error) };
-  } finally {
-    clearTimeout(timer);
-  }
 }
 
 /**

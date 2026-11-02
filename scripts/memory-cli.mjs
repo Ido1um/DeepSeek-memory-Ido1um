@@ -28,6 +28,7 @@ import { createNullHost } from '../src/host.mjs';
 import { memorySection, ownerQQ, loadConfig } from '../src/config.mjs';
 import { probePort } from '../src/portprobe.mjs';
 import { resolveDataDir, ensureDir } from '../src/paths.mjs';
+import { storageReport } from '../src/storage.mjs';
 import { normalizeScoring, search as searchFacts, explainFact } from '../src/scoring-runner.mjs';
 import { describe } from '../src/score.mjs';
 
@@ -253,6 +254,17 @@ try {
         ['记忆开关', memorySection()?.enabled !== false ? '✓' : '✗', memorySection()?.enabled !== false],
         [`日终新鲜（${hours === 999 ? '从未' : hours.toFixed(1) + ' 小时前'}）`, hours < 26 ? '✓' : '✗', hours < 26]
       ];
+      // 数据体积与磁盘：只读告警（! 提示，不计失败）。
+      try {
+        const stg = storageReport({ dir: resolveDataDir({ configDir: memorySection()?.dir || '' }), storage: memorySection()?.storage });
+        rows.push([
+          `数据体积（${stg.dataMb} MB / 上限 ${stg.maxDataMb} MB；磁盘剩余 ${stg.freeGb == null ? '?' : stg.freeGb + ' GB'}）`,
+          stg.level === 'ok' ? '✓' : '!',
+          true
+        ]);
+      } catch {
+        rows.push(['数据体积（检查失败）', '?', true]);
+      }
       let bad = 0;
       for (const [name, mark, ok] of rows) { console.log(`${mark} ${name}`); if (!ok) bad++; }
       try { cmdDue(); } catch {}

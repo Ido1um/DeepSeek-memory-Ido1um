@@ -101,7 +101,29 @@
   .row:first-of-type{border-top:0}
   .row .k{color:var(--muted)} .row .v{font-family:var(--mono);font-variant-numeric:tabular-nums;text-align:right;overflow-wrap:anywhere;max-width:62%}
 
-  table{width:100%;border-collapse:collapse;font-size:14px}\n  .tw{width:100%;overflow-x:auto;-webkit-overflow-scrolling:touch}\n  .tw table{min-width:520px}
+  table{width:100%;border-collapse:collapse;font-size:14px}
+  .tw{width:100%;overflow-x:auto;-webkit-overflow-scrolling:touch}
+  .tw table{min-width:520px}
+
+  /* 长期事实表：固定列宽、内容可断行、数字列右对齐；小屏自动转卡片，避免列被压扁 */
+  .tw table.facts{min-width:0}
+  table.facts{table-layout:fixed}
+  table.facts th,table.facts td{vertical-align:top}
+  table.facts td:nth-child(1){font-size:11px}
+  table.facts .ftxt{display:block;overflow-wrap:anywhere;line-height:1.65}
+  table.facts .v10meta{margin-top:4px;font-size:12px;line-height:1.5;overflow-wrap:anywhere}
+  table.facts th:nth-child(3),table.facts td:nth-child(3){text-align:center;white-space:nowrap}
+  table.facts th:nth-child(3) .tag,table.facts td:nth-child(3) .tag{white-space:nowrap}
+  /* 控件装在内层容器里换行：td 保持 table-cell，避免 flex 把单元格变成块级、行被拆散 */
+  table.facts .edtctl{display:flex;flex-wrap:wrap;gap:6px;align-items:center}
+  table.facts .edtctl > *{margin:0;box-sizing:border-box}
+  table.facts .edtctl select{width:88px}
+  table.facts .edtctl input{width:56px}
+  table.facts .edtctl button{padding:4px 8px;white-space:nowrap}
+  table.facts .actctl{display:flex;flex-wrap:wrap;gap:6px;justify-content:flex-end;align-items:center}
+  table.facts .actctl > *{margin:0;white-space:nowrap}
+  table.facts .actctl .mini{padding:4px 7px}
+  table.facts tbody tr:hover td{background:var(--hover)}
   th{color:var(--muted);font-weight:600;text-align:left;padding:8px;border-bottom:1px solid var(--line);font-size:13px}
   td{padding:12px 8px;border-bottom:1px solid var(--line);vertical-align:top}
   td.num{font-family:var(--mono);font-variant-numeric:tabular-nums;text-align:right;white-space:nowrap}
@@ -274,6 +296,34 @@
   #sessBody select{min-width:104px}
   table.fixed{table-layout:fixed}
   .cardtext{white-space:pre-wrap;font-size:14px;line-height:1.8;max-height:420px;overflow:auto;padding:12px 16px;max-width:66ch;border:1px solid var(--line);border-radius:10px;background:var(--panel2);margin-top:12px}
+
+  @media (max-width:1100px){
+    table.facts th,table.facts td{padding-left:6px;padding-right:6px}
+    table.facts .tag{font-size:12px;padding:2px 6px}
+    table.facts .edtctl select{width:84px}
+    table.facts .edtctl input{width:54px}
+    table.facts .edtctl button{padding:4px 8px}
+  }
+  @media (max-width:900px){
+    .tw table.facts{min-width:0}
+    table.facts td:nth-child(1){font-size:10px}
+    table.facts .tag{font-size:11px;padding:2px 4px}
+    table.facts .edtctl{gap:4px}
+  }
+  @media (max-width:760px){
+    .tw table.facts{min-width:0}
+    table.facts colgroup,table.facts thead{display:none}
+    table.facts,table.facts tbody,table.facts tr,table.facts td{display:block;width:auto}
+    table.facts tr{border:1px solid var(--line);border-radius:10px;padding:12px 14px;margin:0 0 12px;background:var(--panel)}
+    table.facts tr:hover td{background:transparent}
+    table.facts td{border:0;padding:4px 0}
+    table.facts td[data-l]::before{content:attr(data-l);display:inline-block;min-width:74px;color:var(--dim);font-family:var(--mono);font-size:12px}
+    table.facts td:nth-child(1)::before{min-width:0;margin-right:4px}
+    table.facts td:nth-child(3),table.facts td:nth-child(4),table.facts td:nth-child(6){text-align:left}
+    table.facts td:nth-child(5){display:flex;flex-wrap:wrap;gap:8px;align-items:center;white-space:normal}
+    table.facts td:nth-child(5)::before{flex:0 0 100%;min-width:0}
+    table.facts td:nth-child(6) .mini{margin-top:4px}
+  }
 </style>
 </head>
 <body>
@@ -384,9 +434,18 @@
     <section class="panel" id="p-facts" hidden>
       <div class="card">
         <h2>长期事实</h2>
-        <div class="tw"><table class="fixed"><colgroup><col style="width:12%"><col style="width:44%"><col style="width:9%"><col style="width:7%"><col style="width:20%"><col style="width:8%"></colgroup><thead><tr><th>id</th><th>内容</th><th>档</th><th class="num">分</th><th>调档 / 调分</th><th></th></tr></thead>
+        <div class="tw"><table class="fixed facts" id="factTable"><colgroup><col style="width:8%"><col style="width:34%"><col style="width:9%"><col style="width:7%"><col style="width:27%"><col style="width:15%"></colgroup><thead><tr><th>id</th><th>内容</th><th>档</th><th class="num">分</th><th>调档 / 调分</th><th></th></tr></thead>
         <tbody id="factBody"><tr><td colspan="6" class="empty">读取中…</td></tr></tbody></table></div>
         <div class="foot" id="factFoot"></div>
+      </div>
+
+      <div class="card">
+        <h2>模型抽取影子（2.1 · 只读）</h2>
+        <div class="row"><span class="k">状态</span><span class="v" id="exLine">—</span></div>
+        <div class="tw"><table><colgroup><col style="width:26%"><col style="width:44%"><col style="width:10%"><col style="width:20%"></colgroup>
+        <thead><tr><th>主题</th><th>内容</th><th class="num">置信</th><th>结果</th></tr></thead>
+        <tbody id="exBody"><tr><td colspan="4" class="empty">读取中…</td></tr></tbody></table></div>
+        <div class="foot" id="exFoot"></div>
       </div>
     </section>
 
@@ -719,21 +778,35 @@ function render(s) {
     ? `D/Q/E/C 已装 · ${s.v10.cfg.emit ? '会显模糊措辞' : '只记账不改文本'} · 门槛 ${s.v10.cfg.salienceFloor}`
     : '未启用（无 v10.json）';
 
+  // 模型抽取影子（2.1）
+  const ex = s.extract || {};
+  const exSh = ex.shadow || {};
+  const tot = exSh.totals || {};
+  $('exLine').textContent = ex.cfg
+    ? `${ex.cfg.enabled ? '已开启' : '未开启'} · 写入 ${ex.cfg.modelWrite ? '开' : '关'} · 近 7 天 ${nz(tot.batches)} 批 / 候选 ${nz(tot.candidates)} / 通过 ${nz(tot.passed)}`
+    : (ex.error || '不可用');
+  $('exBody').innerHTML = (exSh.recent || []).length ? exSh.recent.map((r) => `
+    <tr><td class="mono dim">${esc(r.topic || '')}</td><td>${esc(r.value || '')}</td>
+      <td class="num">${r.confidence != null ? r.confidence : '—'}</td>
+      <td>${r.verdict === 'pass' ? '<span class="tag hard">通过</span>' : `<span class="tag inv">${esc(r.reason || '挡')}</span>`}</td></tr>`).join('')
+    : '<tr><td colspan="4" class="empty">还没有影子记录 — 日终开启后每晚生成</td></tr>';
+  $('exFoot').textContent = exSh.file ? `${exSh.file.path} · ${(exSh.file.size / 1024).toFixed(1)} KB · 最近写入 ${ago(exSh.file.mtime)}` : '影子文件未创建';
+
   // 事实表
   $('navFacts').textContent = s.facts.length;
   $('factBody').innerHTML = s.facts.length ? s.facts.map((f) => `
-    <tr><td class="mono dim" title="${esc(f.id || '')}">${esc('#')}${esc((f.id || '').slice(-6))}</td>
-      <td>${esc(f.text || '')}${f.v10 ? `<div class="dim mono" style="font-size:12px;margin-top:4px" title="措辞：${esc(f.v10.qLabel || '')}">D ${f.v10.d} · Q ${f.v10.q}（${esc(f.v10.qLevel || '')}） · E ${f.v10.e} · C ${f.v10.c} · A ${f.v10.a}${f.v10.frags ? ' · 碎片 ' + f.v10.frags : ''}</div>` : ''}</td>
-      <td><span class="tag ${esc(f.tier || '')}">${esc(f.tier || '?')}</span></td>
-      <td class="num">${f.score ?? f.base ?? '—'}</td>
-      <td class="edt"><select id="tier-${esc(f.id)}">${['hard', 'long', 'general', 'temp']
+    <tr><td class="mono dim" data-l="id" title="${esc(f.id || '')}">${esc('#')}${esc((f.id || '').slice(-6))}</td>
+      <td data-l="内容"><span class="ftxt">${esc(f.text || '')}</span>${f.v10 ? `<div class="dim mono v10meta" title="措辞：${esc(f.v10.qLabel || '')}">D ${f.v10.d} · Q ${f.v10.q}（${esc(f.v10.qLevel || '')}） · E ${f.v10.e} · C ${f.v10.c} · A ${f.v10.a}${f.v10.frags ? ' · 碎片 ' + f.v10.frags : ''}</div>` : ''}</td>
+      <td data-l="档"><span class="tag ${esc(f.tier || '')}">${esc(f.tier || '?')}</span></td>
+      <td class="num" data-l="分">${f.score ?? f.base ?? '—'}</td>
+      <td class="edt" data-l="调档 / 调分"><div class="edtctl"><select id="tier-${esc(f.id)}">${['hard', 'long', 'general', 'temp']
         .map((t) => `<option value="${t}"${t === (f.tier || 'general') ? ' selected' : ''}>${t}</option>`).join('')}</select>
         <input id="score-${esc(f.id)}" type="number" min="1" max="100" step="1" value="${f.score ?? f.base ?? 50}">
         <button class="mini" onclick="factSave('${esc(f.id)}')">存</button>
-        ${f.manual ? `<button class="mini" onclick="fact('${esc(f.id)}','reset')">还原</button>` : ''}</td>
-      <td class="num">${f.invalidated
+        ${f.manual ? `<button class="mini" onclick="fact('${esc(f.id)}','reset')">还原</button>` : ''}</div></td>
+      <td class="num" data-l="状态"><div class="actctl">${f.invalidated
         ? `<span class="tag inv">作废</span> <button class="mini" onclick="fact('${esc(f.id)}','reinstate')">撤销</button>`
-        : `<button class="mini danger" onclick="fact('${esc(f.id)}','invalidate')">作废</button>`}</td></tr>`).join('')
+        : `<button class="mini danger" onclick="fact('${esc(f.id)}','invalidate')">作废</button>`}</div></td></tr>`).join('')
     : '<tr><td colspan="6" class="empty">尚无长期事实 — 打分引擎还没写入过，此处会随 longterm.jsonl 出现自动填充</td></tr>';
   $('factFoot').textContent = s.facts.length
     ? '调档 = 人工设定目标档位与分数（换算成 I，之后仍按该档衰减，可随时还原）；作废 = 墓碑标记 + 审计留痕，不删行。'
