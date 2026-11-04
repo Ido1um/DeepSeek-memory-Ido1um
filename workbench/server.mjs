@@ -31,9 +31,11 @@ const BRIDGE_CFG = process.env.WORKBENCH_BRIDGE_CFG || '';
 const BRIDGE_LOG = process.env.WORKBENCH_BRIDGE_LOG || '';
 const DEFAULT_DATA = path.join(os.homedir(), '.deepseek-memory', 'data');
 // 写操作一律要令牌：优先环境变量，其次 workbench/.workbench-token（首次自动生成）；
-// 只有显式 --no-token 才关闭（只用于本地调试，启动日志会警告）。
+// 只有同时显式传 --no-token 并设置 WORKBENCH_ALLOW_NO_TOKEN=1 才关闭
+// （双重确认，避免误传 --no-token 就让写接口无认证；只用于本地调试，启动日志会警告）。
 const TOKEN_FILE = path.join(HERE, '.workbench-token');
-const NO_TOKEN = process.argv.includes('--no-token');
+const NO_TOKEN = process.argv.includes('--no-token')
+  && String(process.env.WORKBENCH_ALLOW_NO_TOKEN || '') === '1';
 function loadToken() {
   const env = String(process.env.WORKBENCH_TOKEN || '').trim();
   if (env) return env;
