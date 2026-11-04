@@ -1,0 +1,8 @@
+# 统一换行：仓库里一律 LF，Windows 检出也不要转 CRLF
+* text=auto eol=lf
+
+# 二进制，别当文本比较
+*.png binary
+*.ico binary
+*.zip binary
+*.jpg binary
