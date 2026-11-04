@@ -96,8 +96,13 @@ export function writeGate(text, candidate, { cfg } = {}) {
   // 1) 引用的内容不是用户自己说的
   if (QUOTED.test(t)) return reject('quoted');
 
-  // 2) 聊系统的技术话，不写；待办例外（「周三交报告」可能夹带「报告」这类词）
-  if (cls !== 'task' && META.test(t)) return reject('meta');
+  // 2) 聊系统的技术话，不写。待办不再一律豁免（2026-11-04 实测：「复习傅立叶…是上个星期四的事了」
+  //    这类元讨论被当成待办，还带着「记忆/时间戳」词）；只有明确叮嘱（记住/提醒我）且不含
+  //    强元信息词时才放行。
+  const REMIND = /记住|别忘了|提醒我|记一下/;
+  const META_STRONG = /(记忆|事实卡|注入|轮转|检索|时间戳|词表|正则|抽取|评分|衰减)/;
+  const taskExempt = cls === 'task' && REMIND.test(t) && !META_STRONG.test(t);
+  if (!taskExempt && META.test(t)) return reject('meta');
 
   // 3) 机器人自己的口味/习惯是扮演出来的，不写进用户事实
   if (cls === 'pref' && c.about === 'bot') {

@@ -68,6 +68,13 @@ function scoreText(text, tokens) {
   return hit;
 }
 
+// 命中门槛：查询里带「具体词」（含数字或 ≥3 位拉丁/编号）时，命中一个就够——
+// 「华光 081200」不该因为摘要只写了「华光」就整层落空；普通多词查询仍要求命中 2 个。
+function minHits(tokens = []) {
+  if (!Array.isArray(tokens) || tokens.length <= 1) return 1;
+  return tokens.some((t) => /[0-9]/.test(t) || /^[a-z0-9]{3,}$/i.test(t)) ? 1 : 2;
+}
+
 function clip(s, max) {
   const t = String(s || '').replace(/\s+/g, ' ').trim();
   if (t.length <= max) return t;
@@ -172,6 +179,7 @@ export function layeredRecall(dir, { query, sessionId = '', key = '', now = Date
   const lines = [];
   const layers = [];
   const sessionIds = sessionsOfKey(dir, key, sessionId);
+  const need = minHits(tokens);
 
   // ① 近 7 天情境摘要
   {
@@ -181,7 +189,7 @@ export function layeredRecall(dir, { query, sessionId = '', key = '', now = Date
     for (const ep of eps) {
       if (picked.length >= c.maxEpisodeLines) break;
       const hay = `${ep.title || ''} ${ep.scene || ''} ${(ep.topics || []).join(' ')} ${(ep.thoughts || []).map((t) => t?.text || '').join(' ')}`;
-      if (scoreText(hay, tokens) < 2) continue;
+      if (scoreText(hay, tokens) < need) continue;
       const line = episodeLine(ep, 90);
       if (!line || used + line.length > c.recentEpisodeChars) continue;
       picked.push(line);
@@ -204,7 +212,7 @@ export function layeredRecall(dir, { query, sessionId = '', key = '', now = Date
       maxTurnLines: 1,
       maxChars: 260,
       replyChars: c.replyChars,
-      minScore: 2,
+      minScore: need,
       sessionIds
     });
     if (strong.length) {
@@ -220,6 +228,7 @@ export function layeredRecall(dir, { query, sessionId = '', key = '', now = Date
       maxTurnLines: c.maxTurnLines,
       maxChars: c.recentWindowChars,
       replyChars: c.replyChars,
+      minScore: need,
       sessionIds
     });
     if (turnLines.length) {
@@ -240,7 +249,7 @@ export function layeredRecall(dir, { query, sessionId = '', key = '', now = Date
     for (const ep of eps) {
       if (picked.length >= 2) break;
       const hay = `${ep.title || ''} ${ep.scene || ''} ${(ep.topics || []).join(' ')}`;
-      if (scoreText(hay, tokens) < 2) continue;
+      if (scoreText(hay, tokens) < need) continue;
       const line = episodeLine(ep, 90);
       if (!line || used + line.length > c.monthEpisodeChars) continue;
       picked.push(line);
@@ -281,6 +290,12 @@ export function isSalient(row, dir = '') {
 }
 
 export function retrievalLine(row, dir = '') {
+  // 过期的事实不隐藏，但必须读起来像「旧事」，不能像现在。
+  if (row && row.expired) {
+    const d = row?.dates?.[0]?.date || (row?.saidAt ? new Date(Number(row.saidAt) + 8 * 3600e3).toISOString().slice(0, 10) : '');
+    const head = d ? `旧事 · ${d.slice(5)}` : '旧事';
+    return `· ${head}：${String(row.value || '').slice(0, 60)}`;
+  }
   let cfg = null;
   try {
     cfg = loadV10(dir);

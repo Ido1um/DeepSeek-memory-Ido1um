@@ -1,4 +1,4 @@
-// 打分跑批（v7 §4）：入站判分 → 影子/写入 → 日终结算 → 检索排序。
+﻿// 打分跑批（v7 §4）：入站判分 → 影子/写入 → 日终结算 → 检索排序。
 //
 // 三档模式（config.memory.scoring.mode）：
 //   off     完全不跑（线上零行为）
@@ -10,6 +10,7 @@
 
 import { isMeta, isTemporal, confidenceOf, detectSignals, topicOf, classOf, subjectTag, milestoneOf, quotedMilestones, isQuestion, cleanValue, feelOf } from './facts.mjs';
 import { parseDue } from './due.mjs';
+import { parseTime } from './timeparse.mjs';
 import {
   SCORING_DEFAULTS,
   normalizeConfig,
@@ -185,14 +186,22 @@ export function classify(text, cfg = SCORING_DEFAULTS, opts = {}) {
       tier: 'general',
       I: importanceOf({ explicitRemember: true }, cfg),
       confidence: confidenceOf('note'),
-      ...(due ? { task: true, due: due.due, dueAt: due.dueAt, duePhrase: due.phrase } : {})
+      ...(due && due.dueAt > Date.now() - 12 * 3600e3
+        ? { task: true, due: due.due, dueAt: due.dueAt, duePhrase: due.phrase }
+        : {})
     });
   }
 
-  // 没明说「记住」、但有明确日期和动作（「周三要交报告」「下周一面试」）→ 直接记待办
+  // 没明说「记住」、但有明确日期和动作（「周三要交报告」「下周一面试」）→ 直接记待办。
+  // 2026-11-04 教训：还要挡住三种「假待办」——①元讨论（记忆/时间戳/方案这类技术话）
+  // ②疑问句/反思句（「是不是要…」「要不要…」）③已经过去的事（「上个星期四」）：
+  // 过去的日期不该生成待办，它只是一句回忆，正确去处是备注或事件。
+  const TASK_QUESTION = /(是不是|要不要|会不会|有没有|能不能|该不该)/;
   if (!candidates.length) {
     const due = parseDue(t);
-    if (due && due.dueAt && TASK_ACTION.test(t)) {
+    const pastGrace = 12 * 3600e3;
+    const isPast = due && due.dueAt ? due.dueAt < Date.now() - pastGrace : false;
+    if (due && due.dueAt && !isPast && TASK_ACTION.test(t) && !isMeta(t) && !isQuestion(t) && !TASK_QUESTION.test(t)) {
       const about = 'user';
       const core = t.replace(/^(记住|别忘了|提醒我)/, '').trim().slice(0, 60);
       const sig = sigOf(about, 'task', shortHash(normalizeNote(core) + `|${due.due}`));
@@ -385,6 +394,13 @@ export function recordInbound({ key = '', text = '', ts = Date.now(), scoring, d
         hits: 1,
         lastAt: ts,
         at: ts,
+        // 3.0 补丁：规则即时事实也带时间锚与有效期（基准 = 这条消息的 ts）
+        saidAt: ts,
+        ...(() => {
+          const tp = parseTime(`${text} ${c.value || ''}`, { refMs: ts, kindHint: c.task ? 'event' : 'fact', slot: c.task ? 'event' : 'note' });
+          if (!tp.dates.length && !tp.validUntil) return {};
+          return { dates: tp.dates, validUntil: tp.validUntil || 0, timePhrase: tp.phrase || '', timeConfidence: tp.confidence || 0 };
+        })(),
         // v10 属性（enabled=false 时 c.emo 为 undefined，事件里不会多字段）
         ...(c.emo != null ? { emo: c.emo, rel: c.rel || 0, scene: c.scene || [], fragments: c.fragments || [] } : {}),
         ...(c.task ? { task: true, due: c.due, dueAt: c.dueAt, duePhrase: c.duePhrase } : {})
@@ -705,6 +721,13 @@ export function search({
   // match='tokens' 时改为「整句切成二元组，任一词命中」——真实聊天是整句话，
   // substring 模式几乎永远匹配不到（只有 CLI 拿关键词查时才有效）。
   // 短到切不出二元组（「鱼」「嗯」）时退回整句 substring，避免 tokens 模式反而查不到。
+  // 3.0 补丁：结构化槽位兜底——问「生日」时，即使事实文案里没写这两个字，
+  // 也要把 slot=birthday 的事实找出来（用户那条写的是「2007 年 9 月 5 日生」）。
+  // 只做生日一个槽位；完整的「问法→槽位」路由留给 3.1。
+  const SLOT_HINTS = [[/生日|出生|寿辰/, ['birthday']]];
+  const hintSlots = SLOT_HINTS.filter(([re]) => re.test(q)).flatMap(([, slots]) => slots);
+  // 「用户/我」问生日问的是用户的，「她/助手」问的是她的。只影响排序，不改变命中集合。
+  const whoHint = /用户|我(?!们)|咱|俺/.test(q) ? 'owner' : (/助手|小助手|她|我/.test(q) ? 'bot' : '');
   const hitTokens = match === 'tokens' ? tokensOf(q) : null;
   const tokenHit = hitTokens && hitTokens.length ? hitTokens : null;
   const hitOf = (f) => {
@@ -733,10 +756,12 @@ export function search({
     if (!includeInvalidated && f.status !== 'active') continue;
     // v11：chat 类（寒暄/临时状态）永不进检索，只留在库里等过期
     if (String(f.class || '') === 'chat') continue;
-    const hit = hitOf(f);
+    const slotHit = hintSlots.length > 0 && hintSlots.includes(String(f.slot || ''));
+    const hit = hitOf(f) || slotHit;
     if (q && !hit) continue;
     const bad = (Number(f.badHits) || 0) >= 2 ? 500 : 0;
-    const rank = (TIER_RANK[f.tier] || 0) * 1000 + scoreOf(f, now, cfg) + (hit ? 500 : 0) - bad;
+    const whoBoost = slotHit && whoHint && f.birthday && f.birthday.who === whoHint ? 800 : 0;
+    const rank = (TIER_RANK[f.tier] || 0) * 1000 + scoreOf(f, now, cfg) + (hit ? 500 : 0) + (slotHit ? 6000 : 0) + whoBoost - bad;
     scored.push({ f, rank, hit });
   }
   scored.sort((a, b) => b.rank - a.rank);
@@ -748,6 +773,8 @@ export function search({
     feel: (Array.isArray(f.feels) && f.feels.length) ? f.feels[f.feels.length - 1].feel : '',
     id: f.id,
     src: f.src || null,
+    birthday: f.birthday || null,
+    slot: f.slot || '',
     status: f.status,
     label: f.label,
     text: f.text,

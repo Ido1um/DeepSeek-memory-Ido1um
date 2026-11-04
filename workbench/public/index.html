@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+﻿<!DOCTYPE html>
 <html lang="zh-CN" data-theme="system">
 <head>
 <meta charset="utf-8">
@@ -470,7 +470,7 @@
     <section class="panel" id="p-facts" hidden>
       <div class="card">
         <h2>长期事实</h2>
-        <div class="tw"><table class="fixed facts" id="factTable"><colgroup><col style="width:8%"><col style="width:34%"><col style="width:9%"><col style="width:7%"><col style="width:27%"><col style="width:15%"></colgroup><thead><tr><th>id</th><th>内容</th><th>档</th><th class="num">分</th><th>调档 / 调分</th><th></th></tr></thead>
+        <div class="tw"><table class="fixed facts" id="factTable"><colgroup><col style="width:7%"><col style="width:28%"><col style="width:9%"><col style="width:7%"><col style="width:6%"><col style="width:5%"><col style="width:24%"><col style="width:14%"></colgroup><thead><tr><th>id</th><th>内容</th><th>说于</th><th>时效</th><th>档</th><th class="num">分</th><th>调档 / 调分</th><th></th></tr></thead>
         <tbody id="factBody"><tr><td colspan="6" class="empty">读取中…</td></tr></tbody></table></div>
         <div class="foot" id="factFoot"></div>
       </div>
@@ -705,6 +705,7 @@
 const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 const nz = (n) => (n || 0).toLocaleString('zh-CN');
+const saidDay = (ms) => { if (!ms) return '—'; const d = new Date(ms); if (Number.isNaN(d.getTime())) return '—'; return `${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; };
 const ago = (ms) => {
   if (!ms) return '—';
   const d = Date.now() - ms;
@@ -1051,6 +1052,8 @@ function render(s) {
   return `
     <tr class="${dead ? 'dimrow' : ''}"><td class="mono dim" data-l="id" title="${esc(f.id || '')}">${esc('#')}${esc((f.id || '').slice(-6))}</td>
       <td data-l="内容"><span class="ftxt">${esc(body)}</span>${f.v10 ? `<div class="dim mono v10meta" title="措辞：${esc(f.v10.qLabel || '')}">D ${f.v10.d} · Q ${f.v10.q}（${esc(f.v10.qLevel || '')}） · E ${f.v10.e} · C ${f.v10.c} · A ${f.v10.a}${f.v10.frags ? ' · 碎片 ' + f.v10.frags : ''}</div>` : ''}</td>
+      <td data-l="说于" class="mono dim">${saidDay(f.saidAt)}</td>
+      <td data-l="时效">${f.expired ? '<span class="tag inv">旧事</span>' : '<span class="dim">现在</span>'}</td>
       <td data-l="档"><span class="tag ${esc(f.tier || '')}">${esc(f.tier || '?')}</span></td>
       <td class="num" data-l="分">${f.score ?? f.base ?? '—'}</td>
       <td class="edt" data-l="调档 / 调分"><div class="edtctl" style="${dead ? 'opacity:.4;pointer-events:none' : ''}"><select id="tier-${esc(f.id)}"${dead ? ' disabled' : ''}>${['hard', 'long', 'general', 'temp']
@@ -1064,7 +1067,7 @@ function render(s) {
         ? `<span class="tag inv">作废</span> <button class="mini" onclick="fact('${esc(f.id)}','reinstate')">撤销</button>`
         : `<button class="mini danger" onclick="fact('${esc(f.id)}','invalidate')">作废</button>`}</div></td></tr>`;
   }).join('')
-    : '<tr><td colspan="6" class="empty">尚无长期事实 — 打分引擎还没写入过，此处会随 longterm.jsonl 出现自动填充</td></tr>';
+    : '<tr><td colspan="8" class="empty">尚无长期事实 — 打分引擎还没写入过，此处会随 longterm.jsonl 出现自动填充</td></tr>';
   $('factFoot').textContent = s.facts.length
     ? '调档 = 人工设定目标档位与分数（换算成 I，之后仍按该档衰减，可随时还原）；作废 = 墓碑标记 + 审计留痕，不删行；已合并的可以「拆开」恢复成独立事实。'
     : '首版 longterm.jsonl 为空属正常：打分与四档还没上线。';

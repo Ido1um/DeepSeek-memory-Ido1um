@@ -1,4 +1,4 @@
-import test from 'node:test';
+﻿import test from 'node:test';
 import assert from 'node:assert/strict';
 import { parseDue, reminderWindow, ymd } from '../src/due.mjs';
 
@@ -73,4 +73,11 @@ test('reminderWindow：24 小时内才提醒，提醒过不重复，非事项不
 test('ymd 用本地时区，不会因 UTC 偏差掉一天', () => {
   assert.equal(ymd(new Date(2026, 10, 9, 0, 30)), '2026-11-09');
   assert.equal(ymd(new Date(2026, 10, 9, 23, 30)), '2026-11-09');
+});
+
+test('上个星期四 → 过去（11-04 说 → 10-29），不会再被算成下周四', () => {
+  const now1104 = new Date(2026, 10, 4, 12, 0, 0, 0).getTime();
+  assert.equal(parseDue('复习傅立叶是上个星期四的事了', now1104).due, '2026-10-29');
+  assert.equal(parseDue('上上个星期四的事', now1104).due, '2026-10-22');
+  assert.equal(parseDue('下下个星期一交报告', now1104).due, '2026-11-16');
 });

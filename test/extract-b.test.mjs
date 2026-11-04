@@ -118,3 +118,14 @@ test('抽取B：换用新备注键后仍能认回整句哈希写下的老事实'
   assert.equal(r.mentioned[0].id, 'h-legacy');
   fs.rmSync(dir, { recursive: true, force: true });
 });
+
+test('假待办：元讨论 / 疑问句 / 过去的日期都不生成 task', () => {
+  const meta = classify('貌似记忆又有点混乱，是不是要给你加上时间戳，复习傅立叶和拉普拉斯是上个星期四的事了');
+  assert.equal(meta.candidates.some((c) => c.task), false, '元讨论不该变待办');
+
+  const past = classify('上个星期四交的报告');
+  assert.equal(past.candidates.filter((c) => c.task).length, 0, '过去的日期不是待办');
+
+  const real = classify('下周三要交报告');
+  assert.ok(real.candidates.some((c) => c.task), '真正的待办仍要抽出来');
+});

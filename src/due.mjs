@@ -17,7 +17,9 @@ const startOfDay = (d) => { const x = new Date(d); x.setHours(0, 0, 0, 0); retur
 const addDays = (d, n) => { const x = new Date(d); x.setDate(x.getDate() + n); return x; };
 const ymd = (d) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 
-const WEEK_RE = /(下下|下|这|本)?\s*个?\s*(?:星期|周|礼拜)\s*([一二三四五六日天1-7])/;
+// 前缀必须包含「上上 / 上」：2026-11-04 说「上个星期四」是 10-29（过去），
+// 不带前缀会被当成「下一个星期四」算成 11-05，这是 11-03 那次假待办的直接原因。
+const WEEK_RE = /(上上|下下|上|下|这|本)?\s*个?\s*(?:星期|周|礼拜)\s*([一二三四五六日天1-7])/;
 const REL = [
   [/大后天/, 3], [/后天/, 2], [/明天|明日/, 1],
 ];
@@ -100,7 +102,10 @@ export function parseDue(text, now = Date.now()) {
     let offset = 0;
     if (pre === '下') offset = 7;
     else if (pre === '下下') offset = 14;
+    else if (pre === '上') offset = -7;
+    else if (pre === '上上') offset = -14;
     let cand = addDays(thisWeek, offset);
+    // 「上个星期四」可能是过去；只有无前缀的「星期四」才顺延到下一次。
     if (!pre && cand < today) cand = addDays(cand, 7);
     const t = applyTime(cand, s);
     return { due: ymd(cand), dueAt: t.at.getTime(), phrase: m[0].trim(), hasTime: t.hasTime, source: 'week' };

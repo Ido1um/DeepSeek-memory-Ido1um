@@ -1,4 +1,4 @@
-// 长期记忆落盘（v7 §6）：事件流 + 折叠。
+﻿// 长期记忆落盘（v7 §6）：事件流 + 折叠。
 //
 // 为什么用「事件流」而不是「一条事实一行、原地改」：
 // 1) 只追加，不重写历史，写失败最多丢最后一行；
@@ -19,6 +19,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import * as store from './store.mjs';
+import { isExpired, parseBirthday, birthdayWho } from './timeparse.mjs';
 
 export const LONGTTERM = 'longterm.jsonl';
 export const SHADOW = 'scoring-shadow.jsonl';
@@ -260,6 +261,15 @@ function applyEvent(map, ev) {
       createdAt: toMs(ev.at) || toMs(ev.lastAt) || Date.now(),
       task: Boolean(ev.task),
       due: ev.due || '',
+      // 时间锚（3.0 补丁）：saidAt 是「这句话被说出的那一轮」，createdAt 才是写入时间；
+      // 回填写入的条目两者能差好几天，卡片与检索只认 saidAt。
+      saidAt: Number(ev.saidAt) || 0,
+      dates: Array.isArray(ev.dates) ? ev.dates.slice(0, 4) : [],
+      validUntil: Number(ev.validUntil) || 0,
+      timePhrase: ev.timePhrase || '',
+      timeConfidence: Number.isFinite(Number(ev.timeConfidence)) ? Number(ev.timeConfidence) : 0,
+      timeUnknown: ev.timeUnknown === true,
+      legacyRelative: ev.legacyRelative === true,
       dueAt: Number(ev.dueAt) || 0,
       duePhrase: ev.duePhrase || '',
       notifiedAt: Number(ev.notifiedAt) || 0,
@@ -347,6 +357,16 @@ function applyEvent(map, ev) {
     // 记忆 3.0：给已存在的事实补挂主题/槽位（迁移与归并都走这条，不重写历史行）。
     if (ev.topicId !== undefined) cur.topicId = String(ev.topicId || '');
     if (ev.slot !== undefined) cur.slot = String(ev.slot || '');
+    // 3.0 补丁：时间锚迁移（迁移脚本与后续修订都走这条，同样是追加式）
+    if (ev.saidAt !== undefined) cur.saidAt = Number(ev.saidAt) || 0;
+    if (ev.dates !== undefined) cur.dates = Array.isArray(ev.dates) ? ev.dates.slice(0, 4) : [];
+    if (ev.validUntil !== undefined) cur.validUntil = Number(ev.validUntil) || 0;
+    if (ev.timePhrase !== undefined) cur.timePhrase = String(ev.timePhrase || '');
+    if (ev.timeConfidence !== undefined) cur.timeConfidence = Number(ev.timeConfidence) || 0;
+    if (ev.timeUnknown !== undefined) cur.timeUnknown = ev.timeUnknown === true;
+    if (ev.legacyRelative !== undefined) cur.legacyRelative = ev.legacyRelative === true;
+    // 3.0 补丁：生日结构化字段（{y,m,d,key,yearly,who}），迁移与后续修订都是追加式。
+    if (ev.birthday !== undefined) cur.birthday = ev.birthday && ev.birthday.key ? ev.birthday : null;
     if (`${cur.dueAt}|${cur.due}` !== dueBefore) cur.notifiedAt = 0;
     cur.updatedAt = toMs(ev.at) || Date.now();
   } else if (ev.ev === 'notified') {
@@ -394,7 +414,7 @@ function applyEvent(map, ev) {
   }
 }
 
-export function materialize(events = readEvents().rows, invalidated = readInvalidated()) {
+export function materialize(events = readEvents().rows, invalidated = readInvalidated(), now = Date.now()) {
   const map = new Map();
   for (const ev of events) {
     if (!ev || typeof ev !== 'object') continue;
@@ -403,6 +423,21 @@ export function materialize(events = readEvents().rows, invalidated = readInvali
   }
   for (const f of map.values()) {
     if (f.status === 'active' && invalidated[f.id]) f.status = 'invalidated';
+    // 3.0 补丁：对外只暴露统一的「事件时间」at；过期不删数据，只降级。
+    f.at = Number(f.saidAt) || Number(f.createdAt) || 0;
+    f.expired = isExpired(f.validUntil, now);
+    // 3.0 补丁：生日必须落到日期字段。老事实（value 里写「3 月 15 日」）在这里补算，
+    // 这样卡片/检索不用读文案，直接读 birthday.key（MM-DD）与 birthday.y。
+    if (String(f.slot || '') === 'birthday' && !f.birthday) {
+      const b = parseBirthday(f.value || f.text || '');
+      if (b) {
+        f.birthday = { ...b, who: birthdayWho(f.value || '', f.about || '') };
+        if (!(Array.isArray(f.dates) && f.dates.some((d) => d && d.kind === 'birthday'))) {
+          f.dates = [{ date: b.y ? `${b.y}-${b.key}` : '', kind: 'birthday', who: f.birthday.who, yearly: true, phrase: b.phrase }];
+        }
+      }
+    }
+    f.effectiveStatus = f.expired && f.status === 'active' ? 'expired' : f.status;
   }
   return [...map.values()].sort((a, b) => b.lastAt - a.lastAt);
 }

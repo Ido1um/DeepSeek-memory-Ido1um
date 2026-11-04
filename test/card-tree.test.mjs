@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 import { buildTreeCard, topicsInCard, TREE_HEADER } from '../src/card-tree.mjs';
 
 const TOPICS = [
+  { v: 1, id: 't-bot', name: '助手', parentId: '', aliases: [] },
   { v: 1, id: 't-identity', name: '用户', parentId: '', aliases: [] },
   { v: 1, id: 't-horizon6', name: '极速谷6', parentId: '', aliases: [] },
   { v: 1, id: 't-photo', name: '摄影', parentId: '', aliases: [] },
@@ -132,4 +133,24 @@ test('card-tree：值截断后括号闭合，不留半个括号', () => {
   const close = (r.text.match(/）/g) || []).length;
   assert.equal(open, close, r.text);
   assert.doesNotMatch(r.text, /（[^）]*$/);
+});
+
+test('生日不靠文案：从 birthday 字段渲染成「生日：YYYY年M月D日」', () => {
+  const facts = [
+    fact({ id: 'bd-owner', topicId: 't-identity', slot: 'birthday', value: '用户 2007 年 9 月 5 日生，示例省份人', tier: 'hard', birthday: { y: 2007, m: 9, d: 5, key: '09-05', yearly: true, who: 'owner' } }),
+    fact({ id: 'bd-bot', topicId: 't-bot', slot: 'birthday', value: '助手生日是3月15日', tier: 'hard', birthday: { y: 2023, m: 3, d: 15, key: '03-15', yearly: true, who: 'bot' } })
+  ];
+  const card = buildTreeCard(facts, { maxChars: 1500 }, TOPICS);
+  assert.match(card.text, /【用户】[\s\S]*生日：2007年9月5日/);
+  assert.match(card.text, /【助手】[\s\S]*生日：2023年3月15日/);
+  assert.equal((card.text.match(/生日：/g) || []).length, 2);
+});
+
+test('生日按 birthday.who 归主题：一句话里两个人也只算她的生日', () => {
+  const facts = [
+    fact({ id: 'bd-mix', topicId: 't-identity', slot: 'birthday', value: '3 月 15 日小助手生日，用户答应饭管够', tier: 'hard', birthday: { y: 0, m: 3, d: 15, key: '03-15', yearly: true, who: 'bot' } })
+  ];
+  const card = buildTreeCard(facts, { maxChars: 1500 }, TOPICS);
+  assert.match(card.text, /【助手】[\s\S]*生日：3月15日/);
+  assert.doesNotMatch(card.text, /【用户】[\s\S]*生日：3月15日/);
 });

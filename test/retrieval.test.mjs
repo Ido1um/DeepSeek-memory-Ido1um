@@ -154,3 +154,21 @@ test('原话层跨会话：轮转后的旧窗口原话仍能检索到', () => {
   assert.ok(names.includes('recentWindow'), JSON.stringify(names));
   assert.ok(r.lines.some((l) => l.includes('GT9RS')));
 });
+
+test('带编号的查询：命中一个具体词也算（华光 081200）', () => {
+  const dir = mkdir();
+  writeEpisodes(dir, [
+    { id: 'ep-k', day: '2026-11-01', atFrom: NOW - 2 * DAY, atTo: NOW - 2 * DAY + 3600000, title: '考研华光', scene: '聊了转专业、考研和复习', topics: ['华光'], thoughts: [] }
+  ]);
+  const r = layeredRecall(dir, { query: '华光 081200', sessionId: 's9', now: NOW });
+  assert.ok(r.lines.some((l) => l.includes('考研华光')), '应命中只写了华光的摘要');
+});
+
+test('普通多词查询仍要求命中两个词，不只沾一个', () => {
+  const dir = mkdir();
+  writeEpisodes(dir, [
+    { id: 'ep-p', day: '2026-11-01', atFrom: NOW - 2 * DAY, atTo: NOW - 2 * DAY + 3600000, title: '摄影器材', scene: 'Z8X 配 2875ZA', topics: ['摄影'], thoughts: [] }
+  ]);
+  const r = layeredRecall(dir, { query: '摄影 游戏', sessionId: 's10', now: NOW });
+  assert.equal(r.lines.length, 0);
+});

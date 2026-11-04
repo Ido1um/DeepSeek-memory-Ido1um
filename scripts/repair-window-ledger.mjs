@@ -31,7 +31,10 @@ function suspicious(text = '') {
   return (
     t.startsWith('【当前角色】') ||
     t.startsWith('Current runtime context') ||
-    t.includes('完整角色卡请调用 qq_get_prompt')
+    t.includes('完整角色卡请调用 qq_get_prompt') ||
+    // 桥接自己拼的短提示（到期提醒/待办/唤醒）不是用户原话
+    /^【[^】\n]{2,12}】/.test(t) ||
+    /^(到期提醒|待办提醒|回复检查)/.test(t)
   );
 }
 
@@ -102,6 +105,14 @@ for (const sid of sessions) {
     meta = {};
   }
   meta.nextTurn = ordered.length + 1;
+  // meta 的 key/mode/model 早期没透传，会留空：从账本行里补回最近的非空值
+  for (const k of ['key', 'mode', 'model']) {
+    if (String(meta[k] || '').trim()) continue;
+    for (let i = ordered.length - 1; i >= 0; i -= 1) {
+      const v = String(ordered[i]?.[k] || '').trim();
+      if (v) { meta[k] = v; break; }
+    }
+  }
   fs.writeFileSync(metaPath, `${JSON.stringify(meta, null, 2)}\n`, 'utf8');
 }
 

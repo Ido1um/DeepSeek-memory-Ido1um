@@ -1,4 +1,4 @@
-// 从情境段（episode）里抽 entry（记忆 3.0 P2/P3 的「模型主力抽取」）。
+﻿// 从情境段（episode）里抽 entry（记忆 3.0 P2/P3 的「模型主力抽取」）。
 //
 // 与 extract-model.mjs 的区别：
 // - 输入是**情境段**（一段连续对话 + 它当时的摘要），不是一天里散落的消息；
@@ -15,6 +15,7 @@ import {
 } from './topics.mjs';
 import { episodeTranscript } from './episode-ai.mjs';
 import { readTurns } from './window.mjs';
+import { parseTime, parseBirthday, birthdayWho } from './timeparse.mjs';
 import { readEvents, materialize, readInvalidated, appendEvent } from './longterm.mjs';
 
 // 单值槽位：同一个主题下只保留最新一条（旧值会被 supersede 成「以前提过」）。
@@ -167,10 +168,38 @@ function validateEntry(raw, { transcript, ownerText, topics }) {
   return { ok: true, entry: { topicId, slot, value, quote, kind, confidence } };
 }
 
+/** 毫秒或 ISO 字符串都收（episode.atFrom/atTo 是 ISO，用 Number 会变 NaN）。 */
+function numAt(v) {
+  const n = Number(v);
+  if (Number.isFinite(n) && n > 0) return n;
+  const d = Date.parse(String(v || ''));
+  return Number.isFinite(d) ? d : 0;
+}
+
+/** entry 的引文在窗口账本里对应哪一轮 —— 时间锚必须是这一轮，不是写入时间。 */
+export function turnAtFor(quote, rows = [], episode = null) {
+  const q = normalizeQuote(quote);
+  if (q) {
+    for (const r of rows) {
+      const at = numAt(r?.at);
+      if (!at) continue;
+      const t = normalizeQuote(r?.userRaw?.text || '');
+      if (t && (t.includes(q) || (q.length > 12 && q.includes(t.slice(0, 12))))) return at;
+    }
+  }
+  return numAt(episode?.atTo) || numAt(episode?.atFrom) || 0;
+}
+
 /** 一条 entry → longterm 的 fact 事件（可直接 appendEvent）。 */
 export function factOf(entry, { episode, now = Date.now(), key = '' } = {}) {
   const [cls, tier] = SLOT_PROFILE[entry.slot] || ['fact', 'general'];
   const about = entry.topicId === 't-bot' ? 'bot' : 'user';
+  // 3.0 补丁：saidAt 取「那句话所在的那一轮」，validUntil 由相对时间解析给出
+  const saidAt = numAt(entry.turnAt) || numAt(episode?.atTo) || numAt(episode?.atFrom) || now;
+  const tp = parseTime(`${entry.quote || ''} ${entry.value || ''}`, { refMs: saidAt, slot: entry.slot });
+  // 3.0 补丁：生日必须落到日期字段，而不是只在 value 里写「3 月 15 日」。
+  const birthday = entry.slot === 'birthday' ? parseBirthday(entry.value || entry.quote || '') : null;
+  const bWho = birthday ? birthdayWho(entry.value || '', about) : '';
   return {
     ev: 'fact',
     id: `h-ep-${hash32(`${episode?.id}:${entry.topicId}:${entry.slot}:${entry.value}`)}`,
@@ -192,6 +221,14 @@ export function factOf(entry, { episode, now = Date.now(), key = '' } = {}) {
     hits: 1,
     lastAt: now,
     at: now,
+    saidAt,
+    dates: tp.dates,
+    validUntil: tp.validUntil || 0,
+    timePhrase: tp.phrase || '',
+    timeConfidence: tp.confidence || 0,
+    ...(tp.recurring ? { recurring: true } : {}),
+    ...(birthday ? { birthday: { ...birthday, who: bWho } } : {}),
+    ...(birthday ? { dates: [{ date: birthday.y ? `${birthday.y}-${birthday.key}` : '', kind: 'birthday', who: bWho, yearly: true, phrase: birthday.phrase }] } : {}),
     ...(entry.kind === 'event' ? { ttlDays: 14 } : {}),
     ...(entry.kind === 'plan' ? {} : {})
   };
@@ -231,6 +268,15 @@ export async function extractEpisode(dir, episode, { request = model.requestMode
     const prev = bySlot.get(k);
     if (!prev || e.confidence > prev.confidence) bySlot.set(k, e);
   }
+  // 给每条 entry 打上「那句话所在的那一轮」的时间锚（后面 factOf 用它做相对时间基准）
+  const from = Number(episode?.turnFrom) || 0;
+  const to = Number(episode?.turnTo) || 0;
+  let rows = [];
+  try {
+    rows = readTurns(dir, String(episode?.sessionId || ''), { limit: 400 })
+      .filter((r) => { const n = Number(r?.turn) || 0; return (!from || n >= from) && (!to || n <= to); });
+  } catch { rows = []; }
+  for (const e of bySlot.values()) e.turnAt = turnAtFor(e.quote, rows, episode);
   return { ok: true, entries: [...bySlot.values()], dropped, transcriptChars: transcript.length };
 }
 

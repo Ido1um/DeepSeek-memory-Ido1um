@@ -205,7 +205,12 @@ export function ownerTextOf(prompt = '') {
   // 旧记录里整段 wake prompt 被当成原话：它不含真正的用户消息时宁可返回空，也不要塞回提示词
   if (/^Current runtime context\./.test(t)) return '';
   if (t.includes('【当前角色】') || t.includes('完整角色卡请调用 qq_get_prompt')) return '';
-  return t.trim();
+  // 桥接自己拼的短提示（到期提醒/待办/唤醒/回复检查）会以【块头】开头：
+  // 这是给她的指令，不是用户说的话，宁可留空也不要写进窗口原文。
+  const trimmed = t.trim();
+  if (/^【[^】\n]{2,12}】/.test(trimmed)) return '';
+  if (/^(到期提醒|待办提醒|回复检查)/.test(trimmed)) return '';
+  return trimmed;
 }
 
 /** 从「【本次消息快照】」后面抠出那个 JSON 对象（嵌套数组/字符串里的括号要跳过）。 */
@@ -352,13 +357,16 @@ export function sweepDrafts({ dir = '', maxAgeMs = 30 * 60 * 1000, reason = 'tim
 }
 
 function nextTurnNumber(dir, sessionId, extra = {}) {
-  const meta = ensureMeta(dir, sessionId, extra);
+  const clean = Object.fromEntries(
+    Object.entries(extra || {}).filter(([, v]) => v !== '' && v != null)
+  );
+  const meta = ensureMeta(dir, sessionId, clean);
   const rows = readTurns(dir, sessionId);
   const max = rows.reduce((n, r) => Math.max(n, Number(r?.turn) || 0), 0);
   const turn = Math.max(Number(meta.nextTurn) || 1, max + 1);
   const file = metaFile(dir, sessionId);
   const fresh = readJson(file, meta);
-  writeJsonAtomic(file, { ...fresh, ...extra, nextTurn: turn + 1, updatedAt: Date.now() });
+  writeJsonAtomic(file, { ...fresh, ...clean, nextTurn: turn + 1, updatedAt: Date.now() });
   return turn;
 }
 
@@ -392,7 +400,14 @@ export function finishTurn({
     const w = writeBlock(dir, b?.text ?? '');
     if (w) blocks.push({ k: String(b?.k || 'misc'), sha1: w.sha1, chars: w.chars });
   }
-  const turn = nextTurnNumber(dir, sessionId);
+  const turn = nextTurnNumber(dir, sessionId, (() => {
+    // meta 里的 key/mode/model 只在有值时才写，避免轮转新建会话后留下空字段
+    const extra = {};
+    if (String(key || draft.key || '')) extra.key = String(key || draft.key);
+    if (String(mode || draft.mode || '')) extra.mode = String(mode || draft.mode);
+    if (String(model || draft.model || '')) extra.model = String(model || draft.model);
+    return extra;
+  })());
   const feels = [];
   const seenFeel = new Set();
   for (const f of [...(draft.sendFeels || []), ...replyFeels]) {

@@ -25,6 +25,8 @@
 // 2) 注入「只消费一次」由宿主在 accepted 之后调用 commitInjections()；
 // 3) 模型摘要失败必须回退提取式，轮转永远能完成。
 
+import fs from 'node:fs';
+import path2 from 'node:path';
 import * as store from './store.mjs';
 import * as digest from './digest.mjs';
 import * as scoringRun from './scoring-runner.mjs';
@@ -84,6 +86,8 @@ const DEFAULTS = {
   episode: { summarize: true, maxPerDay: 24, maxInputChars: 6000, timeoutMs: 40000, minAgeMs: 600000 },
   // P3：分层检索（近 7 天情境 → 近 7 天原话 → 近 30 天情境），只注入不写库
   retrieval: { ...retrieval.RETRIEVAL_DEFAULTS },
+  // 3.0 补丁：相对时间解析（enabled=false 即回旧行为：不解析、不显示旧事）
+  time: { enabled: true, tz: '+08:00' },
   // P3：主动翻旧账（随机间隔，24h ≤1 次）
   wander: { ...wander.WANDER_DEFAULTS }
 };
@@ -141,6 +145,7 @@ function normalizeConfig(raw) {
     extract: extractModel.normalizeExtract(c.extract),
     episode: { ...DEFAULTS.episode, ...(c.episode && typeof c.episode === 'object' ? c.episode : {}) },
     retrieval: { ...DEFAULTS.retrieval, ...(c.retrieval && typeof c.retrieval === 'object' ? c.retrieval : {}) },
+    time: { ...DEFAULTS.time, ...(c.time && typeof c.time === 'object' ? c.time : {}) },
     wander: { ...DEFAULTS.wander, ...(c.wander && typeof c.wander === 'object' ? c.wander : {}) }
   };
 }
@@ -407,7 +412,7 @@ export function createMemoryEngine({
         const topics = topicsMod.readTopics(dataDir());
         if (topics.length) {
           // 卡面预算不超过注入预算（默认 1500），否则注入时还要二次裁剪、容易把子主题拦腰截断
-          const treeCfg = { ...c.profile, maxChars: Math.min(Number(c.profile?.maxChars) || 1500, 1500) };
+          const treeCfg = { ...c.profile, maxChars: Math.min(Number(c.profile?.maxChars) || 1500, 1500), timeEnabled: c.time?.enabled !== false };
           const tree = cardTree.buildTreeCard(facts, treeCfg, topics);
           if (tree.text) return { ...tree, facts: facts.length, mode: 'tree' };
         }
@@ -883,13 +888,49 @@ export function createMemoryEngine({
         log(`长期记忆：语气摘要失败（${error?.message ?? error}）`);
       }
 
+      // 窗口对账：她那一侧看到的窗口 vs 聊天记录。只告警、不改数据。
+      // 对账失败不阻塞日终，也不动 window/ 任何文件。
+      let reconcile = null;
+      try {
+        const startOfDay = new Date(now);
+        startOfDay.setHours(0, 0, 0, 0);
+        const lines = [];
+        const summary = [];
+        for (const key of listSessions()) {
+          let sid = '';
+          try { sid = String(host.getSessionId(key) || ''); } catch { sid = ''; }
+          if (!sid) continue;
+          let raws = [];
+          try {
+            raws = store.recentMessages(key, 800)
+              .filter((m) => m && m.role === 'user' && String(m.text || '').trim() && (Number(m.time) || Date.parse(m.ts) || 0) >= startOfDay.getTime())
+              .map((m) => String(m.text));
+          } catch { raws = []; }
+          const r = windowLedger.reconcileSession({ dir: dataDir(), sessionId: sid, sinceMs: startOfDay.getTime(), rawTexts: raws });
+          summary.push({ key, sessionId: sid, ...r });
+          lines.push(
+            `${new Date(now).toISOString()} ${key} ${sid.slice(0, 12)} turns=${r.turns} incomplete=${r.incomplete} spoken=${r.spoken} feels=${r.feels} raw=${r.rawUsers} notInRaw=${r.notInRawCount}`
+          );
+        }
+        if (lines.length) {
+          const logPath = path2.join(dataDir(), 'logs', 'window-reconcile.log');
+          fs.mkdirSync(path2.dirname(logPath), { recursive: true });
+          fs.appendFileSync(logPath, lines.join('\n') + '\n', 'utf8');
+        }
+        reconcile = { at: new Date(now).toISOString(), sessions: summary.length, summary };
+        const mismatch = summary.reduce((a, r) => a + (Number(r.notInRawCount) || 0), 0);
+        log(`窗口对账：${summary.length} 个会话，对不上 ${mismatch} 条${mismatch ? '（见 logs/window-reconcile.log）' : ''}`);
+      } catch (error) {
+        log(`窗口对账失败（不影响日终）：${error?.message ?? error}`);
+      }
+
       const doneAt = s.markDailyDone(now);
       if (lastDaily && now - lastDaily > 2 * DAY_MS) {
         log(`7 天记忆·补跑：上次日终 ${new Date(lastDaily).toISOString()}，已补跑一次（daily-catchup）`);
       }
       log(`7 天记忆·日终：${bounds.today} 已归档 ${archived} 个文件（保留 ${bounds.windowDays} 天：${bounds.startDay} 起），下次日终标记 ${new Date(doneAt).toISOString()}`);
       for (const key of listSessions()) void rotate(key, { reason: 'daily' });
-      return { ok: true, today: bounds.today, windowStart: bounds.startDay, archived, profile, scoring, toneSummary, extract, episodeSummary, entryExtract: entryExtractResult };
+      return { ok: true, today: bounds.today, windowStart: bounds.startDay, archived, profile, scoring, toneSummary, extract, episodeSummary, entryExtract: entryExtractResult, reconcile };
     } catch (error) {
       log(`7 天记忆·日终日维护失败：${error?.message ?? error}`);
       return { ok: false, error: String(error?.message ?? error) };

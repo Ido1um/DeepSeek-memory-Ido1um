@@ -11,6 +11,7 @@ import {
   extractFeels,
   formatRecentSlice,
   finishTurn,
+  ownerTextOf,
   getDraft,
   noteSpoken,
   readBlock,
@@ -298,4 +299,33 @@ test('formatRecentSlice：带出她当时的想法，已发出去的不重复', 
   assert.equal((r.text.match(/当时的想法/g) || []).length, 1, '已发出去的想法不重复');
   const off = formatRecentSlice(dir, sid, { now, includeReply: false });
   assert.ok(!off.text.includes('当时的想法'));
+});
+
+test('ownerTextOf：到期提醒/块头开头的短提示不算用户原话', () => {
+  assert.equal(ownerTextOf('【到期提醒】待办：复习傅立叶\n截止 2026-11-05。用一句话提醒用户。'), '');
+  assert.equal(ownerTextOf('【待办】2026-11-09 交物理实验报告'), '');
+  assert.equal(ownerTextOf('【当前对话】\n【到期提醒】待办：早点睡'), '');
+  assert.equal(ownerTextOf('在吗，说句话'), '在吗，说句话');
+});
+
+test('finishTurn 把 key/mode/model 写进 meta，提醒轮不算用户原话', () => {
+  const dir = tmpDir();
+  const sid = 'session-meta-1';
+  beginTurn({
+    key: 'private:1',
+    sessionId: sid,
+    userRaw: '【到期提醒】待办：复习傅立叶',
+    windowText: '窗口',
+    model: 'deepseek-flash',
+    mode: 'reserved2'
+  });
+  const res = finishTurn({ dir, sessionId: sid, reply: '嗯。', reason: 'completed' });
+  assert.ok(res);
+  const meta = JSON.parse(fs.readFileSync(path.join(dir, 'window', sid, 'meta.json'), 'utf8'));
+  assert.equal(meta.key, 'private:1');
+  assert.equal(meta.mode, 'reserved2');
+  assert.equal(meta.model, 'deepseek-flash');
+  const row = readTurns(dir, sid)[0];
+  assert.equal(row.userRaw.text, '');
+  assert.equal(row.userRaw.synthetic, true);
 });

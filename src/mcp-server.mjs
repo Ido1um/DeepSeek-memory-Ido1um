@@ -74,7 +74,8 @@ server.tool(
     '什么时候用：要回答「我以前说过什么」「你记不记得我…」；回答关于用户偏好/约定/生日的问题之前。',
     '每条事实若带「└ 我当时：…」就是**你当时的感受原话**，可以引用、不要改写；没带体感的会附「└ 原话：…」给你上下文。',
     '和 qq_memory_search 的分工：这个是**提炼过的事实**，那个是**聊天原文**。事实不够再翻原文。',
-    'query 留空 = 按档位列最前面的几条；带 query = 只返回真命中（值/原文/标签/模式任一包含）。',
+    'query 留空 = 按档位列最前面的几条；带 query = 先按逐字命中找，找不到再按词相关兜底（标题会写明是哪种）。',
+    'query 可以直接用你平时说话的整句，例如「我生日是什么时候」「用户怎么称呼我」，不必只传关键词。',
     '被作废的事实默认不返回；确有必要看墓碑时传 includeInvalidated=true。'
   ].join('\n'),
   {
@@ -87,14 +88,30 @@ server.tool(
       const now = Date.now();
       const scoring = normalizeScoring(memorySection()?.scoring || {});
       const facts = materializeWithShadow();
-      const rows = searchFacts({
+      const wantN = Math.max(1, Math.min(20, Number(limit) || 8));
+      let rows = searchFacts({
         query: query || '',
-        limit: Math.max(1, Math.min(20, Number(limit) || 8)),
+        limit: wantN,
         now,
         scoring,
         includeInvalidated: Boolean(includeInvalidated),
         facts
       });
+      // 她平时是用整句话问的（「我生日是什么时候」），逐字匹配必然 0 条。
+      // 这时退一步按词相关找，并在标题里说清楚「不是逐字命中」，不冒充精确答案。
+      let fuzzy = false;
+      if (!rows.length && String(query || '').trim()) {
+        rows = searchFacts({
+          query: String(query).trim(),
+          limit: wantN,
+          now,
+          scoring,
+          includeInvalidated: Boolean(includeInvalidated),
+          facts,
+          match: 'tokens'
+        });
+        fuzzy = rows.length > 0;
+      }
       if (!rows.length) {
         const active = facts.filter((f) => f.status === 'active').length;
         return {
@@ -114,7 +131,9 @@ server.tool(
         const quote = String(f.quote || '').replace(/\s+/g, ' ').slice(0, 40);
         return quote ? `${head}\n  └ 原话：${quote}` : head;
       }).join('\n');
-      const header = `长期库「${query || '(全部)'}」命中 ${rows.length} 条（按档位/分数排序）：`;
+      const header = fuzzy
+        ? `长期库里没有逐字命中「${query}」的条目；按词相关找到 ${rows.length} 条（可能不完全对题，自己再判一下）：`
+        : `长期库「${query || '(全部)'}」命中 ${rows.length} 条（按档位/分数排序）：`;
       return { content: [{ type: 'text', text: `${header}\n${body}\n（这些是长期事实，引用时保持一致；和用户最新的话冲突时以最新的话为准。）` }] };
     } catch (error) {
       return { content: [{ type: 'text', text: `长期库检索失败：${error?.message ?? error}` }], isError: true };

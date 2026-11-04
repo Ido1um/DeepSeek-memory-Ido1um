@@ -16,7 +16,7 @@
 // - 没有挂主题的事实按老方式兜底进「其他」，不丢；
 // - 超预算时从最低优先级的主题整块丢弃，末行注明「（其余条目已省略）」。
 import { SLOT_ORDER, SLOT_LABEL, SINGLE_VALUE_SLOTS, groupByTopic, rootOf } from './topics.mjs';
-import { toEntries, selectSingle, pruneCrossSlot, capEntries, capEvents, entityOf } from './card-hygiene.mjs';
+import { toEntries, selectSingle, pruneCrossSlot, capEntries, capEvents, entityOf, cleanValue } from './card-hygiene.mjs';
 
 export const TREE_HEADER = '【长期记忆（事实卡）】';
 
@@ -105,7 +105,10 @@ function slotEntriesOf(topicFacts) {
 /** @returns {{text:string, body:string, included:Array, dropped:Array, chars:number, groups:Array}} */
 export function buildTreeCard(facts = [], rawCfg = {}, topics = []) {
   const cfg = normalizeCfg(rawCfg);
-  const all = activeFacts(facts);
+  const withTime = rawCfg.timeEnabled !== false;
+  const all = activeFacts(facts).filter((f) => !(withTime && f.expired));
+  // 过期的事实不删，只在主题末尾收一行「旧事」——过了那晚的「今晚计划」不该还在「现在」里。
+  const expiredFacts = withTime ? activeFacts(facts).filter((f) => f.expired) : [];
   if (!all.length) return { text: '', body: '', included: [], dropped: [], chars: 0, groups: [] };
 
   // 主体纠偏：身份类槽位按值里的证据重新归到【用户】或【助手】。
@@ -113,6 +116,11 @@ export function buildTreeCard(facts = [], rawCfg = {}, topics = []) {
   const IDENTITY_SLOTS = new Set(['identity', 'nickname', 'birthday', 'residence', 'job', 'school', 'pref']);
   const mapped = all.filter((f) => f.topicId).map((f) => {
     const slot = String(f.slot || '');
+    // 生日这类结构化字段自带 who，以字段为准（比如「3月15日小助手生日，用户答应饭管够」
+    // 句子里两个人都有，但它生日属于助手）。
+    if (slot === 'birthday' && f.birthday && f.birthday.who) {
+      return { ...f, topicId: f.birthday.who === 'bot' ? 't-bot' : 't-identity' };
+    }
     if (!IDENTITY_SLOTS.has(slot)) {
       return entityOf(f.value || f.text || '') === 'mixed' ? { ...f, topicId: 't-us' } : f;
     }
@@ -184,6 +192,24 @@ export function buildTreeCard(facts = [], rawCfg = {}, topics = []) {
     for (const slot of keys.slice(0, maxSlots)) {
       const entries = slots[slot];
       if (!entries || !entries.length) continue;
+      // 生日不渲染成长句：直接读结构化 birthday 字段，输出「生日：2007年9月5日」。
+      if (slot === 'birthday') {
+        const best = new Map();
+        for (const e of entries) {
+          const b = e.fact && e.fact.birthday;
+          if (!b || !b.key) continue;
+          const cur = best.get(b.key);
+          if (!cur || (!cur.y && b.y)) best.set(b.key, { ...b, fact: e.fact });
+        }
+        if (best.size) {
+          const texts = [...best.values()].map((b) => (b.y ? `${b.y}年${b.m}月${b.d}日` : `${b.m}月${b.d}日`));
+          items.push({
+            text: balanceTail(clip(`生日：${texts.join('、')}`, lineMax)),
+            entries: [...best.values()].map((b) => ({ slot: 'birthday', value: b.key, fact: b.fact }))
+          });
+          continue;
+        }
+      }
       const label = SLOT_LABEL[slot] || slot;
       let picked;
       if (SINGLE_VALUE_SLOTS.has(slot)) {
@@ -226,7 +252,31 @@ export function buildTreeCard(facts = [], rawCfg = {}, topics = []) {
     // 子主题先给「标题 + 第一行」，保证【华光】【学业】这类子树至少露头
     const items = [...own.slice(0, 2), ...childHeads, ...own.slice(2), ...childRest];
     if (!items.length) continue;
-    plans.push({ root: item.root, rootName, items });
+    plans.push({ root: item.root, rootName, items, rootId: item.root.id });
+  }
+
+  // 旧事行：每个根主题末尾一条，最多 3 件，带日期（10-29）。过期不等于删除，只是降级展示。
+  if (expiredFacts.length) {
+    const byRootOld = new Map();
+    for (const f of expiredFacts) {
+      const root = rootOf(topics, f.topicId) || { id: f.topicId || '' };
+      if (!byRootOld.has(root.id)) byRootOld.set(root.id, []);
+      byRootOld.get(root.id).push(f);
+    }
+    for (const p of plans) {
+      const list = (byRootOld.get(p.rootId) || []).sort((a, b) => Number(b.saidAt || 0) - Number(a.saidAt || 0)).slice(0, 3);
+      if (!list.length) continue;
+      const parts = list.map((f) => {
+        // 旧事行同样过清洗：技术噪声（记忆/日志/注入…）不进卡。
+        const clean = cleanValue(f.value, { slot: 'event' }) || '';
+        if (!clean) return '';
+        const date = f?.dates?.[0]?.date || (f.saidAt ? new Date(Number(f.saidAt) + 8 * 3600e3).toISOString().slice(5, 10) : '');
+        const val = clean.length > 26 ? clean.slice(0, 25) + '…' : clean;
+        return date ? `${date.slice(5)} ${val}` : val;
+      }).filter(Boolean);
+      if (!parts.length) continue;
+      p.items.push({ old: true, text: balanceTail(clip(`旧事：${parts.join('；')}`, cfg.subLineChars)), entries: list.map((f) => ({ slot: f.slot || 'event', value: f.value, fact: f })) });
+    }
   }
 
   const blockLen = (p, n) => `【${p.rootName}】\n${p.items.slice(0, n).map((i) => i.text).join('\n')}`.length + 2;
@@ -256,6 +306,33 @@ export function buildTreeCard(facts = [], rawCfg = {}, topics = []) {
       cost = blockLen(p, n);
     }
     keep.set(p, n);
+  }
+
+  // 第二遍：第一遍按权重分完后常有剩余预算（每个主题的行数被份额卡死），把旧事行和其他剩余行补回来。
+  let usedAfter = plans.reduce((a, p) => a + (keep.get(p) ? blockLen(p, keep.get(p)) : 0), 0);
+  let left = budget - usedAfter;
+  for (const p of plans) {
+    const n = keep.get(p) || 0;
+    const oldIndex = p.items.findIndex((i) => i.old);
+    if (oldIndex < 0 || oldIndex < n) continue;
+    const add = blockLen(p, oldIndex + 1) - blockLen(p, n);
+    if (add > left) continue;
+    keep.set(p, oldIndex + 1);
+    left -= add;
+  }
+  let guard = 0;
+  while (left > 0 && guard++ < 500) {
+    let grew = false;
+    for (const p of plans) {
+      const n = keep.get(p) || 0;
+      if (n >= p.items.length) continue;
+      const add = blockLen(p, n + 1) - blockLen(p, n);
+      if (add > left) continue;
+      keep.set(p, n + 1);
+      left -= add;
+      grew = true;
+    }
+    if (!grew) break;
   }
 
   for (const p of plans) {
@@ -304,7 +381,14 @@ export function buildTreeCard(facts = [], rawCfg = {}, topics = []) {
   const partial = blocks.join('\n\n');
   const note = dropped.length ? '\n…（其余条目已省略）' : '';
   let body = `${partial}${note}`;
-  if (body.length > cfg.maxChars) body = `${body.slice(0, cfg.maxChars - 1)}…`;
+  if (body.length > cfg.maxChars) {
+    // 兜底裁剪必须整行丢，不能从中间切断：切断会留下半个括号、半句话，
+    // 卡面看上去像记忆本身残缺，而不是「这张卡放不下」。
+    const lines = body.split('\n');
+    lines.pop(); // 先去掉末尾的省略注记，稍后重写
+    while (lines.length > 1 && `${lines.join('\n')}\n…（另有条目因字数上限未展开）`.length > cfg.maxChars) lines.pop();
+    body = `${lines.join('\n')}\n…（另有条目因字数上限未展开）`;
+  }
   return { text: `${TREE_HEADER}\n${body}`, body, included, dropped, chars: body.length, groups: cardGroups };
 }
 
