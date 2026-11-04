@@ -25,6 +25,7 @@ export const SHADOW = 'scoring-shadow.jsonl';
 export const DRYRUN = 'scoring-dryrun.json';
 export const SHADOW_STATS = 'scoring-shadow-stats.json';
 export const INVALIDATED = 'facts-invalidated.json';
+export const BASE = 'base.json';
 
 export function paths(dir = '') {
   const root = String(dir || '') || store.dataDir();
@@ -37,6 +38,7 @@ export function paths(dir = '') {
     dryrun: path.join(state, DRYRUN),
     stats: path.join(state, SHADOW_STATS),
     invalidated: path.join(state, INVALIDATED),
+    base: path.join(state, BASE),
     audit: path.join(root, 'logs', 'facts-audit.jsonl')
   };
 }
@@ -90,8 +92,64 @@ function appendJsonl(file, row) {
   fs.appendFileSync(file, `${JSON.stringify(row)}\n`, 'utf8');
 }
 
+/** 读压缩快照：{ at, facts:[...] }；不存在/损坏返回 null。 */
+export function readBase(dir = '') {
+  const { rows } = { rows: [] };
+  try {
+    const raw = fs.readFileSync(paths(dir).base, 'utf8').replace(/^\uFEFF/, '');
+    const doc = JSON.parse(raw);
+    if (!doc || !Array.isArray(doc.facts)) return null;
+    return doc;
+  } catch {
+    return null;
+  }
+}
+
+/** 把快照里的折叠态还原成 fact 事件（字段一一对应，materialize 后等价）。 */
+function baseEvents(dir = '') {
+  const doc = readBase(dir);
+  if (!doc) return [];
+  return doc.facts.map((f) => ({
+    ev: 'fact',
+    id: f.id,
+    sig: f.sig,
+    key: f.key,
+    about: f.about,
+    pattern: f.pattern,
+    label: f.label,
+    value: f.value,
+    text: f.text,
+    quote: f.quote,
+    topic: f.topic,
+    class: f.class,
+    conf: f.conf,
+    private: f.private,
+    source: f.source,
+    tier: f.tier,
+    I: f.I,
+    s: f.s,
+    hits: f.hits,
+    manual: f.manual,
+    autoI: f.autoI,
+    autoS: f.autoS,
+    versions: f.versions,
+    supersededAt: f.supersededAt,
+    notifiedAt: f.notifiedAt,
+    task: f.task,
+    due: f.due,
+    dueAt: f.dueAt,
+    duePhrase: f.duePhrase,
+    lastAt: f.lastAt,
+    at: f.createdAt,
+    _base: true
+  }));
+}
+
 export function readEvents(dir = '') {
-  return readJsonl(paths(dir).longterm);
+  const tail = readJsonl(paths(dir).longterm);
+  const base = baseEvents(dir);
+  if (!base.length) return tail;
+  return { rows: [...base, ...tail.rows], bad: tail.bad };
 }
 
 export function appendEvent(row, dir = '') {
@@ -99,6 +157,7 @@ export function appendEvent(row, dir = '') {
   return row;
 }
 
+// 兼容 readShadow() / readShadow(limit) / readShadow(dir) / readShadow(limit, dir)
 export function readShadow(limit = 0, dir = '') {
   if (typeof limit === 'string') { dir = limit; limit = 0; }
   const { rows, bad } = readJsonl(paths(dir).shadow);
@@ -143,134 +202,204 @@ export function materializeWithShadow(dir = '') {
   return materialize([...readEvents(dir).rows, ...readShadow(0, dir).rows], readInvalidated(dir));
 }
 
+/**
+ * 置信度：v11 起每条事实带 conf（0–1）。老事件没有这个字段，
+ * 按档位推导——硬事实近乎确定，临时状态只是「可能记着」，chat 更低。
+ * 读时推导、不迁移，保证旧数据不写库也能有新语义。
+ */
+export function confOfTier(tier) {
+  const t = String(tier || '').trim();
+  if (t === 'hard') return 0.95;
+  if (t === 'long') return 0.8;
+  if (t === 'temp') return 0.5;
+  if (t === 'chat') return 0.3;
+  return 0.6;
+}
+
+function applyEvent(map, ev) {
+  const id = ev.id;
+  if (ev.ev === 'fact') {
+    map.set(id, {
+      id,
+      sig: ev.sig || '',
+      key: ev.key || '',
+      about: ev.about || 'user',
+      pattern: ev.pattern || '',
+      label: ev.label || '',
+      value: ev.value || '',
+      text: ev.text || '',
+      src: ev.src || null,
+      quote: ev.quote || '',
+      topic: ev.topic || '',
+      // 记忆 3.0：主题簇归属（缺省空串；老事件不迁移，读取时按空处理）
+      topicId: String(ev.topicId || ''),
+      slot: String(ev.slot || ''),
+      class: ev.class || 'note',
+      // v11：置信度与私密标记（老事件缺字段 → 按档推导 / false，不迁移）
+      conf: Number.isFinite(Number(ev.conf)) ? Math.max(0, Math.min(1, Number(ev.conf))) : confOfTier(ev.tier),
+      private: ev.private === true,
+      badHits: 0,
+      feels: [],
+      // v10：属性与检索计数（老事件缺字段 → 0/空；读时按需推导，不迁移）
+      emo: Number.isFinite(Number(ev.emo)) ? Math.max(-1, Math.min(1, Number(ev.emo))) : 0,
+      rel: Number.isFinite(Number(ev.rel)) ? Math.max(0, Math.min(1, Number(ev.rel))) : 0,
+      scene: Array.isArray(ev.scene) ? ev.scene.slice(0, 6) : [],
+      fragments: Array.isArray(ev.fragments) ? ev.fragments.slice(0, 5) : [],
+      accessCount: Number.isFinite(Number(ev.accessCount)) ? Number(ev.accessCount) : 0,
+      lastRetrievedAt: toMs(ev.lastRetrievedAt) || 0,
+      source: ev.source && typeof ev.source === 'object' ? ev.source : null,
+      tier: ev.tier === 'hard' ? 'hard' : ev.tier || 'general',
+      I: Number.isFinite(Number(ev.I)) ? Number(ev.I) : 0.2,
+      s: ev.s != null && Number.isFinite(Number(ev.s)) ? Number(ev.s) : 3,
+      hits: Number.isFinite(Number(ev.hits)) ? Number(ev.hits) : 1,
+      manual: ev.manual === true,
+      autoI: ev.autoI === undefined ? null : ev.autoI,
+      autoS: ev.autoS === undefined ? null : ev.autoS,
+      updatedAt: 0,
+      lastAt: toMs(ev.lastAt) || toMs(ev.at) || Date.now(),
+      createdAt: toMs(ev.at) || toMs(ev.lastAt) || Date.now(),
+      task: Boolean(ev.task),
+      due: ev.due || '',
+      dueAt: Number(ev.dueAt) || 0,
+      duePhrase: ev.duePhrase || '',
+      notifiedAt: Number(ev.notifiedAt) || 0,
+      versions: Number.isFinite(Number(ev.versions)) ? Number(ev.versions) : 1,
+      supersededAt: Number(ev.supersededAt) || 0,
+      // 合并：被并进来的条目退场（status=merged），主条目记下并入了谁
+      mergedInto: ev.mergedInto || '',
+      mergedFrom: Array.isArray(ev.mergedFrom) ? ev.mergedFrom.slice(0, 8) : [],
+      status: ev.status === 'invalidated' || ev.status === 'expired' || ev.status === 'merged' ? ev.status : 'active'
+    });
+    return;
+  }
+  if (ev.ev === 'merge') {
+    // 一条事实并进另一条：源条目退场（保留原文与审计），目标条目吸收 mergedFrom
+    const into = ev.into || ev.id || '';
+    const at = toMs(ev.at) || Date.now();
+    const ids = Array.isArray(ev.ids) ? ev.ids.filter((x) => x && x !== into) : [];
+    for (const sid of ids) {
+      const src = map.get(sid);
+      if (!src || src.status === 'merged' || src.status === 'invalidated') continue;
+      src.status = 'merged';
+      src.mergedInto = into;
+      src.updatedAt = at;
+    }
+    const dst = into ? map.get(into) : null;
+    if (dst) {
+      dst.mergedFrom = Array.from(new Set([...(dst.mergedFrom || []), ...ids]));
+      dst.updatedAt = at;
+    }
+    return;
+  }
+  if (ev.ev === 'unmerge') {
+    // 拆开合并：源条目回到 active（可再调档/调分），目标条目不再记这个来源。
+    // 只追加、不物理删，历史里仍能看到当初怎么合的。
+    const at = toMs(ev.at) || Date.now();
+    const src = map.get(id);
+    if (src) {
+      const into = src.mergedInto;
+      src.status = 'active';
+      src.mergedInto = '';
+      src.updatedAt = at;
+      const dst = into ? map.get(into) : null;
+      if (dst && Array.isArray(dst.mergedFrom)) {
+        dst.mergedFrom = dst.mergedFrom.filter((x) => x !== id);
+        dst.updatedAt = at;
+      }
+    }
+    return;
+  }
+  const cur = map.get(id);
+  if (!cur) return;
+  if (ev.ev === 'mention') {
+    cur.hits = Math.max(cur.hits, Number(ev.hits) || cur.hits + 1);
+    if (ev.s != null && Number.isFinite(Number(ev.s))) cur.s = Number(ev.s);
+    if (Number.isFinite(Number(ev.I))) cur.I = Number(ev.I);
+    cur.lastAt = toMs(ev.at) || cur.lastAt;
+    if (cur.status === 'expired') cur.status = 'active';
+  } else if (ev.ev === 'retrieved') {
+    // v10：检索命中只记「被想起来」，不涨分、不当提及（同 fact 每天最多一条，由调用方去重）
+    cur.accessCount = (Number(cur.accessCount) || 0) + 1;
+    cur.lastRetrievedAt = toMs(ev.at) || Date.now();
+    cur.updatedAt = cur.lastRetrievedAt;
+
+  } else if (ev.ev === 'src') {
+    if (cur) cur.src = ev.src || null;  } else if (ev.ev === 'tier') {
+    if (ev.tier) cur.tier = ev.tier;
+    if (ev.s != null && Number.isFinite(Number(ev.s))) cur.s = Number(ev.s);
+    cur.updatedAt = toMs(ev.at) || Date.now();
+    if (cur.status === 'expired' && ev.tier !== 'temp') cur.status = 'active';
+  } else if (ev.ev === 'expire') {
+    cur.status = 'expired';
+    cur.updatedAt = toMs(ev.at) || Date.now();
+  } else if (ev.ev === 'invalidate') {
+    cur.status = 'invalidated';
+    cur.updatedAt = toMs(ev.at) || Date.now();
+  } else if (ev.ev === 'reinstate') {
+    cur.status = 'active';
+    cur.updatedAt = toMs(ev.at) || Date.now();
+  } else if (ev.ev === 'update') {
+    const dueBefore = `${cur.dueAt}|${cur.due}`;
+    if (ev.due) cur.due = ev.due;
+    if (Number(ev.dueAt)) cur.dueAt = Number(ev.dueAt);
+    if (typeof ev.task === 'boolean') cur.task = ev.task;
+    if (ev.duePhrase) cur.duePhrase = ev.duePhrase;
+    // 记忆 3.0：给已存在的事实补挂主题/槽位（迁移与归并都走这条，不重写历史行）。
+    if (ev.topicId !== undefined) cur.topicId = String(ev.topicId || '');
+    if (ev.slot !== undefined) cur.slot = String(ev.slot || '');
+    if (`${cur.dueAt}|${cur.due}` !== dueBefore) cur.notifiedAt = 0;
+    cur.updatedAt = toMs(ev.at) || Date.now();
+  } else if (ev.ev === 'notified') {
+    cur.notifiedAt = toMs(ev.at) || Date.now();
+  } else if (ev.ev === 'supersede') {
+    if (ev.value !== undefined) cur.value = ev.value;
+    if (ev.quote) cur.quote = ev.quote;
+    if (ev.label) cur.label = ev.label;
+    if (ev.source && typeof ev.source === 'object') cur.source = ev.source;
+    cur.versions = (Number(cur.versions) || 1) + 1;
+    cur.supersededAt = toMs(ev.at) || Date.now();
+    cur.lastAt = toMs(ev.at) || cur.lastAt;
+    if (cur.status === 'expired') cur.status = 'active';
+  } else if (ev.ev === 'feel') {
+    const feel = String(ev.feel || '').trim().slice(0, 40);
+    if (cur && feel) {
+      cur.feels = Array.isArray(cur.feels) ? cur.feels : [];
+      if (!cur.feels.some((x) => x.feel === feel)) {
+        cur.feels.push({ feel, quote: ev.quote || '', by: ev.by || 'self', derived: ev.derived === true, at: toMs(ev.at) || Date.now() });
+      }
+    }
+  } else if (ev.ev === 'badHit') {
+    cur.badHits = (Number(cur.badHits) || 0) + 1;
+    cur.lastBadAt = toMs(ev.at) || Date.now();
+  } else if (ev.ev === 'manual') {
+    if (ev.tier) cur.tier = ev.tier;
+    const target = Number(ev.score);
+    if (Number.isFinite(target)) {
+      if (!cur.manual) { cur.autoI = cur.I; cur.autoS = cur.s; }
+      cur.manual = true;
+      cur.I = Math.max(0, Math.min(1, target / 100));
+      if (ev.tier !== 'hard' && ev.s != null && Number.isFinite(Number(ev.s))) cur.s = Number(ev.s);
+      cur.lastAt = toMs(ev.at) || cur.lastAt;
+    }
+    cur.updatedAt = toMs(ev.at) || Date.now();
+    if (cur.status === 'expired' && ev.tier !== 'temp') cur.status = 'active';
+  } else if (ev.ev === 'manualReset') {
+    if (cur.autoI !== null && Number.isFinite(Number(cur.autoI))) cur.I = Number(cur.autoI);
+    if (cur.autoS !== null && Number.isFinite(Number(cur.autoS))) cur.s = Number(cur.autoS);
+    cur.manual = false;
+    cur.autoI = null;
+    cur.autoS = null;
+    cur.lastAt = toMs(ev.at) || cur.lastAt;
+    cur.updatedAt = toMs(ev.at) || Date.now();
+  }
+}
+
 export function materialize(events = readEvents().rows, invalidated = readInvalidated()) {
   const map = new Map();
   for (const ev of events) {
     if (!ev || typeof ev !== 'object') continue;
-    const id = ev.id;
-    if (!id) continue;
-    if (ev.ev === 'fact') {
-      map.set(id, {
-        id,
-        sig: ev.sig || '',
-        key: ev.key || '',
-        about: ev.about || 'user',
-        pattern: ev.pattern || '',
-        label: ev.label || '',
-        value: ev.value || '',
-        text: ev.text || '',
-        quote: ev.quote || '',
-        topic: ev.topic || '',
-        class: ev.class || 'note',
-        badHits: 0,
-        source: ev.source && typeof ev.source === 'object' ? ev.source : null,
-        // v10：属性与片段（老事件缺字段 → 0/空；不迁移、不写回）
-        emo: Number.isFinite(Number(ev.emo)) ? Number(ev.emo) : 0,
-        rel: Number(ev.rel) || 0,
-        scene: Array.isArray(ev.scene) ? ev.scene : [],
-        fragments: Array.isArray(ev.fragments) ? ev.fragments : [],
-        accessCount: 0,
-        lastRetrievedAt: 0,
-        tier: ev.tier === 'hard' ? 'hard' : ev.tier || 'general',
-        I: Number.isFinite(Number(ev.I)) ? Number(ev.I) : 0.2,
-        s: ev.s != null && Number.isFinite(Number(ev.s)) ? Number(ev.s) : 3,
-        hits: Number.isFinite(Number(ev.hits)) ? Number(ev.hits) : 1,
-        manual: false,
-        autoI: null,
-        autoS: null,
-        updatedAt: 0,
-        lastAt: toMs(ev.lastAt) || toMs(ev.at) || Date.now(),
-        createdAt: toMs(ev.at) || toMs(ev.lastAt) || Date.now(),
-        task: Boolean(ev.task),
-        due: ev.due || '',
-        dueAt: Number(ev.dueAt) || 0,
-        duePhrase: ev.duePhrase || '',
-        notifiedAt: 0,
-        versions: 1,
-        supersededAt: 0,
-        status: 'active'
-      });
-      continue;
-    }
-    const cur = map.get(id);
-    if (!cur) continue;
-    if (ev.ev === 'mention') {
-      cur.hits = Math.max(cur.hits, Number(ev.hits) || cur.hits + 1);
-      if (ev.s != null && Number.isFinite(Number(ev.s))) cur.s = Number(ev.s);
-      if (Number.isFinite(Number(ev.I))) cur.I = Number(ev.I);
-      cur.lastAt = toMs(ev.at) || cur.lastAt;
-      if (cur.status === 'expired') cur.status = 'active';
-    } else if (ev.ev === 'tier') {
-      // 升降档是「打分结算」不是「又被提了一次」：不能动 lastAt，否则一降档就回春，
-      // daysSinceHit 归零、分数反弹，长期记忆永远沉不下去。
-      if (ev.tier) cur.tier = ev.tier;
-      if (ev.s != null && Number.isFinite(Number(ev.s))) cur.s = Number(ev.s);
-      cur.updatedAt = toMs(ev.at) || Date.now();
-      if (cur.status === 'expired' && ev.tier !== 'temp') cur.status = 'active';
-    } else if (ev.ev === 'expire') {
-      cur.status = 'expired';
-      cur.updatedAt = toMs(ev.at) || Date.now();
-    } else if (ev.ev === 'invalidate') {
-      cur.status = 'invalidated';
-      cur.updatedAt = toMs(ev.at) || Date.now();
-    } else if (ev.ev === 'reinstate') {
-      cur.status = 'active';
-      cur.updatedAt = toMs(ev.at) || Date.now();
-    } else if (ev.ev === 'update') {
-      // 补正类事件：只改指定字段（用于给已存在的记忆补 due / 标记事项）。
-      const dueBefore = `${cur.dueAt}|${cur.due}`;
-      if (ev.due) cur.due = ev.due;
-      if (Number(ev.dueAt)) cur.dueAt = Number(ev.dueAt);
-      if (typeof ev.task === 'boolean') cur.task = ev.task;
-      if (ev.duePhrase) cur.duePhrase = ev.duePhrase;
-      // 改期后旧的「已提醒」标记必须失效，否则新日期永远不提醒。
-      if (`${cur.dueAt}|${cur.due}` !== dueBefore) cur.notifiedAt = 0;
-      cur.updatedAt = toMs(ev.at) || Date.now();
-    } else if (ev.ev === 'notified') {
-      cur.notifiedAt = toMs(ev.at) || Date.now();
-    } else if (ev.ev === 'retrieved') {
-      // v10：只记「被想起过」，不动 I/S/C/D/R，也不当提及（无自强化）。
-      cur.accessCount = (Number(cur.accessCount) || 0) + 1;
-      cur.lastRetrievedAt = toMs(ev.at) || Date.now();
-      cur.updatedAt = toMs(ev.at) || cur.updatedAt || Date.now();
-    } else if (ev.ev === 'supersede') {
-      // v8 版本链：同主题的新说法顶掉旧值，但历史留在事件流里（可审计、可回滚）。
-      if (ev.value !== undefined) cur.value = ev.value;
-      if (ev.quote) cur.quote = ev.quote;
-      if (ev.source && typeof ev.source === 'object') cur.source = ev.source;
-      cur.versions = (Number(cur.versions) || 1) + 1;
-      cur.supersededAt = toMs(ev.at) || Date.now();
-      cur.lastAt = toMs(ev.at) || cur.lastAt;
-      if (cur.status === 'expired') cur.status = 'active';
-    } else if (ev.ev === 'badHit') {
-      // v8 反自强化：召回后被判无关 → 记一笔，累计 2 次检索降权（不删）。
-      cur.badHits = (Number(cur.badHits) || 0) + 1;
-      cur.lastBadAt = toMs(ev.at) || Date.now();
-    } else if (ev.ev === 'manual') {
-      // 人工调档/调分：给目标档位与目标分数，换算成 I（=目标/100）并重置为「现在」；
-      // 之后仍按该档的正常规则衰减 —— 人工只是拉一下，不是冻住。
-      if (ev.tier) cur.tier = ev.tier;
-      const target = Number(ev.score);
-      if (Number.isFinite(target)) {
-        if (!cur.manual) { cur.autoI = cur.I; cur.autoS = cur.s; }
-        cur.manual = true;
-        cur.I = Math.max(0, Math.min(1, target / 100));
-        if (ev.tier !== 'hard' && ev.s != null && Number.isFinite(Number(ev.s))) cur.s = Number(ev.s);
-        // 工作台写的是 ISO 字符串：能解析就用它，解析不出才回落到上一次时间（不能用 now）。
-        cur.lastAt = toMs(ev.at) || cur.lastAt;
-      }
-      cur.updatedAt = toMs(ev.at) || Date.now();
-      if (cur.status === 'expired' && ev.tier !== 'temp') cur.status = 'active';
-    } else if (ev.ev === 'manualReset') {
-      // 撤销人工调整：I 与 S 都回到被人工改之前的值，继续按自动规则衰减。
-      if (cur.autoI !== null && Number.isFinite(Number(cur.autoI))) cur.I = Number(cur.autoI);
-      if (cur.autoS !== null && Number.isFinite(Number(cur.autoS))) cur.s = Number(cur.autoS);
-      cur.manual = false;
-      cur.autoI = null;
-      cur.autoS = null;
-      cur.lastAt = toMs(ev.at) || cur.lastAt;
-      cur.updatedAt = toMs(ev.at) || Date.now();
-    }
+    if (!ev.id) continue;
+    applyEvent(map, ev);
   }
   for (const f of map.values()) {
     if (f.status === 'active' && invalidated[f.id]) f.status = 'invalidated';
@@ -308,4 +437,122 @@ export function readDryrun(dir = '') {
 
 export function writeDryrun(obj, dir = '') {
   writeJson(paths(dir).dryrun, obj);
+}
+
+/**
+ * 事件流内存索引：进程内只读新增字节，避免每条消息把整库重放一遍。
+ * - 只读、不写文件；文件变小（被删/回滚）时自动全量重置。
+ * - invalidated 墓碑单独叠加，撤销后状态能回到 active（不会被钉死）。
+ */
+const INDEXES = new Map();
+
+export function openIndex(dir = '') {
+  const cacheKey = paths(dir).state;
+  let idx = INDEXES.get(cacheKey);
+  if (!idx) { idx = createIndex(dir); INDEXES.set(cacheKey, idx); }
+  return idx;
+}
+
+export function dropIndex(dir = '') {
+  INDEXES.delete(paths(dir).state);
+}
+
+function createIndex(dir) {
+  const file = paths(dir).longterm;
+  const baseFile = paths(dir).base;
+  const invFile = paths(dir).invalidated;
+  const map = new Map();
+  const evStatus = new Map();
+  let offset = 0;
+  let leftover = '';
+  let invSig = '';
+  let baseSig = '';
+  let invalidated = {};
+  let cached = null;
+  const stats = { events: 0, bytes: 0, reloads: 0, reads: 0, baseAt: 0 };
+
+  function reset() {
+    map.clear(); evStatus.clear(); offset = 0; leftover = '';
+    stats.events = 0; stats.bytes = 0; cached = null;
+  }
+
+  /** 快照变更（重新压缩/被删）就整体重置：tail 必须重新叠。 */
+  function syncBase() {
+    let sig = 'none';
+    try { const st = fs.statSync(baseFile); sig = st.size + ':' + st.mtimeMs; } catch { sig = 'none'; }
+    if (sig === baseSig) return;
+    baseSig = sig;
+    reset();
+    const evs = baseEvents(dir);
+    for (const ev of evs) {
+      applyEvent(map, ev);
+      const cur = map.get(ev.id);
+      if (cur) evStatus.set(ev.id, cur.status);
+      stats.events++;
+    }
+    stats.baseAt = evs.length;
+  }
+
+  function sync() {
+    stats.reads++;
+    syncBase();
+    let size = 0;
+    try { size = fs.statSync(file).size; } catch { reset(); return; }
+    if (size < offset) { reset(); stats.reloads++; }
+    if (size === offset) return;
+    const fd = fs.openSync(file, 'r');
+    try {
+      const len = size - offset;
+      const buf = Buffer.alloc(len);
+      fs.readSync(fd, buf, 0, len, offset);
+      offset = size;
+      const parts = (leftover + buf.toString('utf8')).split('\n');
+      leftover = parts.pop() ?? '';
+      for (const raw of parts) {
+        const line = raw.replace(/^\uFEFF/, '').trim();
+        if (!line) continue;
+        let ev = null;
+        try { ev = JSON.parse(line); } catch { continue; }
+        if (!ev || typeof ev !== 'object' || !ev.id) continue;
+        applyEvent(map, ev);
+        const cur = map.get(ev.id);
+        if (cur) evStatus.set(ev.id, cur.status);
+        stats.events++;
+      }
+    } finally {
+      fs.closeSync(fd);
+    }
+    stats.bytes = offset;
+    cached = null;
+  }
+
+  function loadInvalidated() {
+    let sig = 'none';
+    try {
+      const st = fs.statSync(invFile);
+      sig = st.size + ':' + st.mtimeMs;
+    } catch { sig = 'none'; }
+    if (sig === invSig) return;
+    invSig = sig;
+    try { invalidated = JSON.parse(fs.readFileSync(invFile, 'utf8')) || {}; } catch { invalidated = {}; }
+    cached = null;
+  }
+
+  function facts() {
+    sync();
+    loadInvalidated();
+    if (!cached) {
+      const out = [];
+      for (const f of map.values()) {
+        const own = evStatus.get(f.id) || f.status;
+        const base = f.mergedInto && f.status !== 'active' ? 'merged' : own;
+        f.status = base === 'active' && invalidated[f.id] ? 'invalidated' : base;
+        out.push(f);
+      }
+      cached = out.sort((a, b) => b.lastAt - a.lastAt);
+    }
+    return cached;
+  }
+
+  return { facts, sync, stats, invalidate: () => { cached = null; } };
 }

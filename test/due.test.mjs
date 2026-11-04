@@ -53,7 +53,7 @@ test('时刻解析：下午三点 → 15:00；晚上八点 → 20:00；上午十
 
 test('解析不出返回 null（不瞎猜）', () => {
   assert.equal(p('今天好累'), null);
-  assert.equal(p('助手记住啦'), null);
+  assert.equal(p('我记住啦'), null);
   assert.equal(p(''), null);
 });
 

@@ -54,10 +54,15 @@ function bulletOf(fact) {
 export function projectBody(facts = [], rawConfig = {}) {
   const cfg = normalizeCardConfig(rawConfig);
   const active = (Array.isArray(facts) ? facts : []).filter(
-    (f) => f && f.status !== 'invalidated' && f.status !== 'expired'
+    (f) => f && f.status !== 'invalidated' && f.status !== 'expired' && f.status !== 'merged'
   );
-  // v8 分类：event 走时间线，不进事实卡（否则一天一条把卡挤爆）
-  const forCard = active.filter((f) => String(f.class || 'note') !== 'event');
+  // v8 分类：event 走时间线，不进事实卡（否则一天一条把卡挤爆）；
+  // 例外：里程碑（pattern==='first'）一年也没几条，值得进卡。
+  // v11：chat 类（寒暄/临时状态）也不进卡，只在库里短暂留档。
+  const forCard = active.filter(
+    (f) => String(f.class || 'note') !== 'chat'
+      && (String(f.class || 'note') !== 'event' || f.pattern === 'first')
+  );
   const byScore = (a, b) => scoreOf(b) - scoreOf(a);
   const byNew = (a, b) => (Number(b.lastAt) || 0) - (Number(a.lastAt) || 0);
 

@@ -66,7 +66,7 @@ function seedLog(key = KEY, sid = 'session-test-0001', startedAt = Date.now()) {
   // messageId 必须全局唯一：store 内部 seenIds 是进程级去重表，多个用例复用同一 id 会被当成重复消息丢掉。
   const tag = `${sid}-${startedAt}`;
   store.recordIncoming({ key, text: '用户：以后都叫我老板', sender: '用户', time: startedAt + 1000, messageId: `${tag}-m1` });
-  store.recordIncoming({ key, text: '助手记住了：用户喜欢火锅', sender: '男友', time: startedAt + 2000, messageId: `${tag}-m2` });
+  store.recordIncoming({ key, text: '我记住了：用户喜欢擂饭', sender: '男友', time: startedAt + 2000, messageId: `${tag}-m2` });
   store.recordOutgoing({ key, text: '好，记下了', time: startedAt + 3000, messageId: `${tag}-m3` });
   return sid;
 }
@@ -84,8 +84,8 @@ test('composePrompt：没有事实卡/交接时原文不动', (t) => {
 test('composePrompt：事实卡 + 交接都拼进去，commit 后只消费一次', (t) => {
   setup(t, { profileEnabled: true });
   const sid = seedLog();
-  store.writeProfile('- 用户喜欢火锅\n- 用户希望叫助手助手');
-  store.setHandover(KEY, '【7 天记忆交接】上一段聊了火锅', { reason: 'age', sessionId: sid });
+  store.writeProfile('- 用户喜欢擂饭\n- 用户希望叫小助手我');
+  store.setHandover(KEY, '【7 天记忆交接】上一段聊了擂饭', { reason: 'age', sessionId: sid });
   const host = createNullHost();
   const engine = createMemoryEngine({ host });
 
@@ -94,6 +94,10 @@ test('composePrompt：事实卡 + 交接都拼进去，commit 后只消费一次
   assert.match(first.text, /【7 天记忆交接】/);
   assert.match(first.text, /【当前对话】\n在吗$/);
   assert.equal(first.profile, true);
+  // 账本记的是她当时真正看到的块：卡只能出现一次（预算装配已含卡时不能再 push 一遍）
+  assert.equal(first.blocks.filter((b) => b.k === 'card').length, 1);
+  assert.ok(first.blocks.every((b) => typeof b.text === 'string' && b.text.length > 0));
+  assert.ok(first.blocks.some((b) => b.k === 'handover'));
 
   engine.commitInjections(KEY, 'session-new', first);
   assert.equal(store.peekHandover(KEY), null);
@@ -102,6 +106,7 @@ test('composePrompt：事实卡 + 交接都拼进去，commit 后只消费一次
   const second = engine.composePrompt(KEY, 'session-new', '再问一句');
   assert.equal(second.text, '再问一句');
   assert.equal(second.profile, false);
+  assert.deepEqual(second.blocks, []);
 });
 
 test('rotate：只认真实 token，不按会话年龄（v7 去掉年龄兜底）', async (t) => {
@@ -117,14 +122,35 @@ test('rotate：只认真实 token，不按会话年龄（v7 去掉年龄兜底�
   assert.deepEqual(host.calls.retire, []);
   assert.equal(store.getSessionInfo(KEY).rotations, 0);
 
-  // 人工强制 → 生成摘要并退役
-  assert.equal(await engine.rotate(KEY, { force: true, reason: 'manual' }), true);
+  // 人工强制（需用户批准）→ 生成摘要并退役
+  assert.equal(await engine.rotate(KEY, { force: true, reason: 'manual' }), false);
+  assert.deepEqual(host.calls.retire, []);
+  assert.equal(await engine.rotate(KEY, { force: true, reason: 'manual', approved: true }), true);
   assert.deepEqual(host.calls.retire, [KEY]);
   assert.equal(host.getSessionId(KEY), '');
   const handover = store.peekHandover(KEY);
   assert.ok(handover?.text.includes('【7 天记忆交接】'));
   assert.equal(store.getSessionInfo(KEY).rotations, 1);
   assert.ok(fs.readdirSync(path.join(process.env.QQ_MEMORY_DIR, 'digests')).length >= 1);
+});
+
+test('rotate：交接摘要里带最近一天原话（窗口账本），总长不超 handoverMaxChars', async (t) => {
+  setup(t, { memory: { handoverMaxChars: 1200, handover: { recentSlice: { maxChars: 600, perTurn: 120 } } } });
+  const sid = seedLog(KEY, 'session-slice-0001', Date.now() - 2 * DAY);
+  const host = createNullHost({ ownerKey: KEY });
+  host.setSession(KEY, sid);
+  store.noteSession(KEY, sid);
+  const dir = process.env.QQ_MEMORY_DIR;
+  const { beginTurn, noteSpoken, finishTurn } = await import('../src/window.mjs');
+  beginTurn({ key: KEY, sessionId: sid, userRaw: '我极速谷6是预购冲的顶级版', windowText: 'w' });
+  noteSpoken({ key: KEY, sessionId: sid, tool: 'qq_send_message', text: '代代都上顶级版，这就不是随便玩玩了' });
+  finishTurn({ dir, sessionId: sid, reply: '记住了' });
+  const engine = createMemoryEngine({ host });
+  assert.equal(await engine.rotate(KEY, { force: true, reason: 'manual', approved: true }), true);
+  const handover = store.peekHandover(KEY)?.text || '';
+  assert.match(handover, /【最近一天的原话】/);
+  assert.match(handover, /顶级版/);
+  assert.ok(handover.length <= 1200, `handover 超长：${handover.length}`);
 });
 
 test('rotate：真实 token ≥ 0.7×窗口时轮转，冷却期内不再转', async (t) => {
@@ -165,6 +191,26 @@ test('rotate：token 低于阈值不转（含 minRotateTokens 保底）', async 
   assert.equal(await engine.rotate(KEY), false);
 });
 
+test('rotate：达到 70% 阈值时 force 无需批准，低于阈值才要批准', async (t) => {
+  setup(t, { memory: { rotation: { contextWindowTokens: 100000, minRotateTokens: 20000 } } });
+  const sid = seedLog(KEY, 'session-gate-0001', Date.now() - 2 * DAY);
+  const host = createNullHost({ ownerKey: KEY });
+  host.setSession(KEY, sid);
+  const engine = createMemoryEngine({ host });
+
+  // 低于阈值：force 不带 approved → 拦下
+  seedTokens(path.join(process.env.QQ_MEMORY_DIR), sid, 30000);
+  assert.equal(engine.rotationStatus(KEY, sid).due, false);
+  assert.equal(await engine.rotate(KEY, { force: true, reason: 'manual' }), false);
+  assert.deepEqual(host.calls.retire, []);
+
+  // 达到阈值（80000 ≥ 70000）：force 不带 approved 也放行
+  seedTokens(path.join(process.env.QQ_MEMORY_DIR), sid, 80000);
+  assert.equal(engine.rotationStatus(KEY, sid).due, true);
+  assert.equal(await engine.rotate(KEY, { force: true, reason: 'manual' }), true);
+  assert.deepEqual(host.calls.retire, [KEY]);
+});
+
 test('rotate：会话忙或 DSH 未就绪时不动作', async (t) => {
   setup(t);
   const sid = seedLog(KEY, 'session-busy-0001', Date.now() - 8 * DAY);
@@ -178,8 +224,11 @@ test('rotate：会话忙或 DSH 未就绪时不动作', async (t) => {
   host.setDshReady(false);
   assert.equal(await engine.rotate(KEY), false);
   assert.equal(host.calls.retire.length, 0);
-  // force 可以越过 DSH 未就绪
-  assert.equal(await engine.rotate(KEY, { force: true, reason: 'manual' }), true);
+  // 闸门：force 但没有用户批准 → 拒绝
+  assert.equal(await engine.rotate(KEY, { force: true, reason: 'manual' }), false);
+  assert.equal(host.calls.retire.length, 0);
+  // 用户批准后 force 可以越过 DSH 未就绪
+  assert.equal(await engine.rotate(KEY, { force: true, reason: 'manual', approved: true }), true);
 });
 
 test('ensureFallbackHandover：新会话没有交接时补一份，且每会话只生成一次', async (t) => {

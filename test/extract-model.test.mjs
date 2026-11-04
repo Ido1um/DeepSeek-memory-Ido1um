@@ -9,6 +9,7 @@ import path from 'node:path';
 
 import * as store from '../src/store.mjs';
 import * as lt from '../src/longterm.mjs';
+import { readCandidates } from '../src/candidates.mjs';
 import {
   normalizeExtract,
   pickMessages,
@@ -89,13 +90,13 @@ test('extract：取数只留当天用户侧、跳过附件与命令、连续重�
     { role: 'user', text: '[图片]', ts: now },
     { role: 'user', text: '/status', ts: now },
     { role: 'user', text: '嗯', ts: now },
-    { role: 'user', text: '下周要交课程报告', ts: now },
+    { role: 'user', text: '下周要交物理实验报告', ts: now },
     { role: 'user', text: '昨天说的那句话', ts: now - 3 * 86400_000 }
   ];
   const picked = pickMessages(rows, now, normalizeExtract({}));
   assert.deepEqual(
     picked.map((m) => m.text),
-    ['我生日是11月2号', '下周要交课程报告']
+    ['我生日是11月2号', '下周要交物理实验报告']
   );
 });
 
@@ -134,18 +135,18 @@ test('extract：硬校验门（quote 子串 / value 形状 / topic 白名单 / k
   const cfg = normalizeExtract({ minConfidence: 0.6 });
   const base = { about: 'user', subject: '我', confidence: 0.9 };
 
-  const ok = validateCandidate({ ...base, kind: 'fact', topic: 'user:birthday', value: '11月2日', quote: '我生日是11月2号' }, { messages, now, cfg });
+  const ok = validateCandidate({ ...base, kind: 'fact', topic: 'user:birthday', value: '3月15日', quote: '我生日是11月2号' }, { messages, now, cfg });
   assert.equal(ok.ok, true);
   assert.equal(ok.candidate.topic, 'user:birthday');
 
   const cases = [
-    [{ ...base, kind: 'fact', topic: 'user:birthday', value: '11月2日', quote: '我生日是11月3号' }, 'quote'],
+    [{ ...base, kind: 'fact', topic: 'user:birthday', value: '3月15日', quote: '我生日是11月3号' }, 'quote'],
     [{ ...base, kind: 'fact', topic: 'user:birthday', value: '爱吃鱼', quote: '我生日是11月2号' }, 'value'],
-    [{ ...base, kind: 'fact', topic: 'user:hobby', value: '咖啡', quote: '喜欢喝咖啡' }, 'topic'],
+    [{ ...base, kind: 'fact', topic: 'user:favorite', value: '咖啡', quote: '喜欢喝咖啡' }, 'topic'],
     [{ ...base, kind: 'pref', topic: 'user:note', value: '咖啡', quote: '喜欢喝咖啡' }, 'topic-kind'],
     [{ ...base, kind: 'event', topic: 'user:event', value: '咖啡', quote: '喜欢喝咖啡', confidence: 0.2 }, 'confidence'],
-    [{ ...base, kind: 'fact', subject: '你', topic: 'user:birthday', value: '11月2日', quote: '我生日是11月2号' }, 'subject'],
-    [{ ...base, kind: 'fact', topic: 'user:birthday', value: '11月2日', quote: '我生日是11月2号', about: 'bot' }, 'about']
+    [{ ...base, kind: 'fact', subject: '你', topic: 'user:birthday', value: '3月15日', quote: '我生日是11月2号' }, 'subject'],
+    [{ ...base, kind: 'fact', topic: 'user:birthday', value: '3月15日', quote: '我生日是11月2号', about: 'bot' }, 'about']
   ];
   for (const [cand, reason] of cases) {
     const r = validateCandidate(cand, { messages, now, cfg });
@@ -198,21 +199,21 @@ test('extract：与已有事实按 topic+value 和相似度去重', async () => 
   assert.equal(sum.totals.passed, 1);
 });
 
-// ── 7. 任务抽取 + 封顶 + modelWrite ───────────────────────────────────────
-test('extract：task 抽取走 modelWrite 时落事件，超过每日封顶的丢 cap', async () => {
+// ── 7. 任务抽取 + 封顶 + 候选池（v11：不直接写事实）───────────────────────
+test('extract：通过候选进候选池（不写事实），超过每日封顶的丢 cap', async () => {
   const dir = tmp({ after() {} });
   const now = Date.now();
   const due = futureDue(3);
-  say('下周一要交课程报告', { at: now });
-  say('周末想去吃火锅', { at: now });
-  say('最近在学古典吉他', { at: now });
+  say('下周一要交物理实验报告', { at: now });
+  say('我特别喜欢吃火锅', { at: now });
+  say('我最近在学古典吉他', { at: now });
 
   const fake = async () => ({
     ok: true,
     text: batchJson([
-      { kind: 'task', about: 'user', subject: '我', topic: `user:task:${due}`, due, value: '课程报告', quote: '下周一要交课程报告', confidence: 0.95 },
-      { kind: 'pref', about: 'user', subject: '我', topic: 'user:pref:火锅', value: '火锅', quote: '周末想去吃火锅', confidence: 0.8 },
-      { kind: 'fact', about: 'user', subject: '我', topic: 'user:skill', value: '古典吉他', quote: '最近在学古典吉他', confidence: 0.7 }
+      { kind: 'task', about: 'user', subject: '我', topic: `user:task:${due}`, due, value: '物理实验报告', quote: '下周一要交物理实验报告', confidence: 0.95 },
+      { kind: 'pref', about: 'user', subject: '我', topic: 'user:pref:火锅', value: '火锅', quote: '我特别喜欢吃火锅', confidence: 0.8 },
+      { kind: 'fact', about: 'user', subject: '我', topic: 'user:skill', value: '古典吉他', quote: '我最近在学古典吉他', confidence: 0.7 }
     ])
   });
   const stats = await runModelExtract({
@@ -224,15 +225,20 @@ test('extract：task 抽取走 modelWrite 时落事件，超过每日封顶的�
   });
   assert.equal(stats.candidates, 3);
   assert.equal(stats.passed, 2);
-  assert.equal(stats.written, 2);
+  assert.equal(stats.pooled, 2);
+  assert.equal(stats.written, 0);
   assert.equal(stats.byReason.cap, 1);
 
+  // v11 关键语义：模型候选只进候选池，事实库一行都不写
   const facts = lt.readEvents(dir).rows.filter((r) => r.ev === 'fact');
-  assert.equal(facts.length, 2);
-  assert.ok(facts.some((f) => f.task === true && f.due === due));
-  assert.ok(facts.every((f) => f.source && f.source.model === 'extract'));
+  assert.equal(facts.length, 0);
+  const pool = readCandidates(dir).rows;
+  assert.equal(pool.length, 2);
+  assert.ok(pool.every((r) => (r.status || 'pending') === 'pending'));
+  assert.ok(pool.some((r) => r.kind === 'task' && r.due === due));
+  assert.ok(pool.every((r) => r.source && r.source.model === 'extract'));
 
-  // 再跑一次：同样候选应全部判重（影子里的 seen 只在单次运行内生效，这里靠已有事实去重）
+  // 再跑一次：池里 pending 的也算已有，同样候选应判重
   const stats2 = await runModelExtract({ now, dir, cfg: { enabled: true, modelWrite: false, batchSize: 10 }, ownerKey: KEY, callModel: fake });
   assert.equal(stats2.passed, 1); // 上一轮被 cap 掉的「古典吉他」这轮通过
   assert.ok(stats2.byReason.dup >= 2);

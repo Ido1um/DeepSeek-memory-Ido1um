@@ -21,7 +21,7 @@ function tmpDir() {
 function seed(dir, extra = {}) {
   lt.appendEvent({
     ev: 'fact', id: 'h-1', sig: 'user:pref:酸奶', about: 'user', pattern: 'pref',
-    label: 'pref', value: '喜欢草莓味酸奶', text: '喜欢草莓味酸奶',
+    label: 'pref', value: '喜欢百合味酸奶', text: '喜欢百合味酸奶',
     tier: 'general', I: 0.5, s: 3, at: Date.now() - 3 * DAY, ...extra,
   }, dir);
 }

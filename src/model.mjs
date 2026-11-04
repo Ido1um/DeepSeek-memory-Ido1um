@@ -5,7 +5,48 @@
 //   json: true        让调用方以更低温度、更短输出跑「结构化输出」，仍然沿用同一 key/超时链路
 //   temperature       显式温度（默认不传，保持摘要行为逐字节不变）
 // 任何失败都返回 { ok:false }，调用方永远能降级，不抛异常。
-import { loadSearchConfig, resolveSearchApiKey } from './config.mjs';
+import fs from 'node:fs';
+import path from 'node:path';
+import { loadSearchConfig, resolveSearchApiKey, memorySection, DEFAULT_DIR } from './config.mjs';
+
+// 记忆侧用量：与聊天共用同一份 logs/ 目录，但单独一个文件，便于把「聊天花销」和「记忆花销」拆开。
+function usageFile() {
+  // 目录优先级必须与引擎一致（QQ_MEMORY_DIR > config.memory.dir > 默认），
+  // 否则沙箱自检/Dry-run 会把用量写进生产日志，污染「记忆花销」统计。
+  let dir = '';
+  try {
+    dir = String(process.env.QQ_MEMORY_DIR || memorySection()?.dir || '');
+  } catch {
+    /* 配置坏了也落默认目录 */
+  }
+  return path.join(dir || DEFAULT_DIR, 'logs', 'memory-usage.jsonl');
+}
+
+export function recordUsage({ caller = 'model', model = '', ok = false, usage = null, ms = 0, error = '' } = {}) {
+  try {
+    const file = usageFile();
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    const u = usage && typeof usage === 'object' ? usage : {};
+    const line = JSON.stringify({
+      t: Date.now(),
+      k: 'mem',
+      caller,
+      model,
+      ok,
+      ms,
+      error: error ? String(error).slice(0, 160) : undefined,
+      usage: {
+        input_tokens: Number(u.input_tokens) || 0,
+        output_tokens: Number(u.output_tokens) || 0,
+        cache_read_input_tokens: Number(u.cache_read_input_tokens) || 0,
+        cache_creation_input_tokens: Number(u.cache_creation_input_tokens) || 0
+      }
+    });
+    fs.appendFileSync(file, line + '\n', 'utf8');
+  } catch {
+    /* 记账失败不能影响记忆本身 */
+  }
+}
 
 export const DEFAULT_MODEL_BASE_URL = 'https://api.deepseek.com/anthropic/v1';
 export const DEFAULT_TIMEOUT_MS = 30000;
@@ -22,7 +63,8 @@ export async function requestModel({
   json = false,
   temperature = null,
   maxTokens = 4000,
-  model = ''
+  model = '',
+  caller = 'model'
 } = {}) {
   const startedAt = Date.now();
   const searchConfig = loadSearchConfig();
@@ -62,7 +104,9 @@ export async function requestModel({
     });
     if (!res.ok) {
       const body = await res.text().catch(() => '');
-      return { ok: false, error: `HTTP ${res.status} ${String(body).replace(/\s+/g, ' ').slice(0, 200)}`, ms: Date.now() - startedAt };
+      const error = `HTTP ${res.status} ${String(body).replace(/\s+/g, ' ').slice(0, 200)}`;
+      recordUsage({ caller, model: payload.model, ok: false, ms: Date.now() - startedAt, error });
+      return { ok: false, error, ms: Date.now() - startedAt };
     }
     const data = await res.json().catch(() => null);
     const text = (Array.isArray(data?.content) ? data.content : [])
@@ -73,8 +117,11 @@ export async function requestModel({
     if (!text) {
       const kinds = (Array.isArray(data?.content) ? data.content : []).map((b) => b?.type).filter(Boolean).join(',') || '空';
       const stop = data?.stop_reason ? `，stop_reason=${data.stop_reason}` : '';
-      return { ok: false, error: `模型没有返回文本（blocks=${kinds}${stop}）`, ms: Date.now() - startedAt };
+      const error = `模型没有返回文本（blocks=${kinds}${stop}）`;
+      recordUsage({ caller, model: payload.model, ok: false, usage: data?.usage, ms: Date.now() - startedAt, error });
+      return { ok: false, error, ms: Date.now() - startedAt };
     }
+    recordUsage({ caller, model: payload.model, ok: true, usage: data?.usage, ms: Date.now() - startedAt });
     return {
       ok: true,
       text: text.slice(0, budget),
@@ -85,6 +132,7 @@ export async function requestModel({
     };
   } catch (error) {
     const name = error?.name;
+    recordUsage({ caller, model, ok: false, ms: Date.now() - startedAt, error: name === 'AbortError' ? `模型超时（${timeoutMs}ms）` : String(error?.message ?? error) });
     return {
       ok: false,
       error: name === 'AbortError' ? `模型超时（${timeoutMs}ms）` : String(error?.message ?? error),

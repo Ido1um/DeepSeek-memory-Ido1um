@@ -1,31 +1,24 @@
-# 运行产物
 node_modules/
-npm-debug.log*
-*.log
+package-lock.json
+pnpm-lock.yaml
 
-# 本机数据（绝不进仓库）
+# 本机配置与数据：一律不进仓库
+config.json
+config.local.json
 data/
-raw/
-state/
-logs/
-digests/
-profile.md
-rules.md
+*.log
+*.jsonl
+!config.example.json
 
-# 本机备份 / 影子 / 草稿
-workbench/backup/
+# 工作台运行时文件
+workbench/.workbench-token
 workbench/config.json
-shadow/
-scratch/
-*.bak
-*.bak-*
-*.bak.*
-_private/
+workbench/backup/
+workbench/*.bak-*
 
-# 编辑器
+# 编辑器 / 系统
 .vscode/
 .idea/
 .DS_Store
 Thumbs.db
-# 工作台写令牌（本机生成，绝不入库）
-workbench/.workbench-token
+*.tmp

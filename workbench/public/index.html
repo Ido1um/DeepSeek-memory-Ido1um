@@ -178,11 +178,39 @@
     .topbar{padding:12px 20px}
   }
 
+  @media (max-width:1100px){
+    /* 中等宽度：收紧单元格留白与调档控件，保证 6 列不把表格挤宽 */
+    table.facts th,table.facts td{padding-left:6px;padding-right:6px}
+    table.facts .tag{font-size:12px;padding:2px 6px}
+    table.facts .edtctl select{width:84px}
+    table.facts .edtctl input{width:54px}
+    table.facts .edtctl button{padding:4px 8px}
+  }
   @media (max-width:900px){
     .topbar{display:flex;flex-wrap:wrap;gap:8px}
     .crumb{flex:1 1 100%}
     .card{padding:16px}
     .big{font-size:28px}
+    /* 横向空间变窄：调档控件允许换行，避免把「分」列挤出去 */
+    .tw table.facts{min-width:0}
+    table.facts td:nth-child(1){font-size:10px}
+    table.facts .tag{font-size:11px;padding:2px 4px}
+    table.facts .edtctl{gap:4px}
+  }
+  /* 手机/窄窗：长期事实表改为一行一张卡片，彻底避免列错位 */
+  @media (max-width:760px){
+    .tw table.facts{min-width:0}
+    table.facts colgroup,table.facts thead{display:none}
+    table.facts,table.facts tbody,table.facts tr,table.facts td{display:block;width:auto}
+    table.facts tr{border:1px solid var(--line);border-radius:10px;padding:12px 14px;margin:0 0 12px;background:var(--panel)}
+    table.facts tr:hover td{background:transparent}
+    table.facts td{border:0;padding:4px 0}
+    table.facts td[data-l]::before{content:attr(data-l);display:inline-block;min-width:74px;color:var(--dim);font-family:var(--mono);font-size:12px}
+    table.facts td:nth-child(1)::before{min-width:0;margin-right:4px}
+    table.facts td:nth-child(3),table.facts td:nth-child(4),table.facts td:nth-child(6){text-align:left}
+    table.facts td:nth-child(5){display:flex;flex-wrap:wrap;gap:8px;align-items:center;white-space:normal}
+    table.facts td:nth-child(5)::before{flex:0 0 100%;min-width:0}
+    table.facts td:nth-child(6) .mini{margin-top:4px}
   }
   @media (max-width:820px){
     .app{flex-direction:column}
@@ -297,33 +325,31 @@
   table.fixed{table-layout:fixed}
   .cardtext{white-space:pre-wrap;font-size:14px;line-height:1.8;max-height:420px;overflow:auto;padding:12px 16px;max-width:66ch;border:1px solid var(--line);border-radius:10px;background:var(--panel2);margin-top:12px}
 
-  @media (max-width:1100px){
-    table.facts th,table.facts td{padding-left:6px;padding-right:6px}
-    table.facts .tag{font-size:12px;padding:2px 6px}
-    table.facts .edtctl select{width:84px}
-    table.facts .edtctl input{width:54px}
-    table.facts .edtctl button{padding:4px 8px}
-  }
-  @media (max-width:900px){
-    .tw table.facts{min-width:0}
-    table.facts td:nth-child(1){font-size:10px}
-    table.facts .tag{font-size:11px;padding:2px 4px}
-    table.facts .edtctl{gap:4px}
-  }
-  @media (max-width:760px){
-    .tw table.facts{min-width:0}
-    table.facts colgroup,table.facts thead{display:none}
-    table.facts,table.facts tbody,table.facts tr,table.facts td{display:block;width:auto}
-    table.facts tr{border:1px solid var(--line);border-radius:10px;padding:12px 14px;margin:0 0 12px;background:var(--panel)}
-    table.facts tr:hover td{background:transparent}
-    table.facts td{border:0;padding:4px 0}
-    table.facts td[data-l]::before{content:attr(data-l);display:inline-block;min-width:74px;color:var(--dim);font-family:var(--mono);font-size:12px}
-    table.facts td:nth-child(1)::before{min-width:0;margin-right:4px}
-    table.facts td:nth-child(3),table.facts td:nth-child(4),table.facts td:nth-child(6){text-align:left}
-    table.facts td:nth-child(5){display:flex;flex-wrap:wrap;gap:8px;align-items:center;white-space:normal}
-    table.facts td:nth-child(5)::before{flex:0 0 100%;min-width:0}
-    table.facts td:nth-child(6) .mini{margin-top:4px}
-  }
+  .winlist{margin-top:10px;display:flex;flex-direction:column;gap:10px}
+  .turn{border:1px solid var(--line);border-radius:10px;padding:10px 12px;background:var(--panel2)}
+  .turn .th{display:flex;gap:10px;align-items:baseline;font-size:12px;color:var(--muted);flex-wrap:wrap}
+  .turn .tu{margin-top:6px;font-size:14px;line-height:1.7;white-space:pre-wrap;word-break:break-word}
+  .turn .tw{margin-top:6px;font-size:13px;line-height:1.7;color:var(--muted);white-space:pre-wrap;word-break:break-word}
+  .turn .tf{margin-top:6px;font-size:13px;color:var(--gold,#d7b56d);white-space:pre-wrap}
+  .turn .tag{font-family:var(--mono);font-size:11px;padding:1px 6px;border-radius:999px;border:1px solid var(--line)}
+  .epitem{border:1px solid var(--line);border-radius:10px;padding:10px 12px;background:var(--panel2);margin-top:10px}
+  .epitem .t{font-weight:600}
+  .epitem .m{font-size:12px;color:var(--muted);margin-top:4px;font-family:var(--mono)}
+  .epitem .s{margin-top:6px;font-size:13px;line-height:1.7}
+  .topitem{margin-top:12px;padding:10px 12px;border:1px solid var(--line);border-radius:10px;background:var(--panel2)}
+  .topitem .th{font-weight:600}
+  .topitem .slot{margin-top:6px;font-size:13px;line-height:1.7}
+  .topitem .slot b{color:var(--muted);font-weight:500;margin-right:6px}
+  .rows2{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:8px}
+  .rows2 .cell{border:1px solid var(--line);border-radius:10px;padding:8px 10px;background:var(--panel2)}
+  .rows2 .k2{font-size:12px;color:var(--muted)}
+  .rows2 .v2{font-size:16px;margin-top:4px;font-family:var(--mono)}
+  @media (max-width:760px){ .rows2{grid-template-columns:repeat(2,minmax(0,1fr))} }
+
+  .tscroll{overflow-x:auto;-webkit-overflow-scrolling:touch;border:1px solid var(--line);border-radius:10px}
+  table.bill{min-width:600px;width:100%}
+  table.bill th{white-space:nowrap}
+  table.bill td{white-space:nowrap;font-variant-numeric:tabular-nums}
 </style>
 </head>
 <body>
@@ -341,6 +367,10 @@
       <button class="navitem" data-panel="facts">长期事实 <span class="n" id="navFacts">0</span></button>
         <button class="navitem" data-panel="sess">会话与策略 <span class="n" id="navSess">0</span></button>
       <button class="navitem" data-panel="tune">调控台 <span class="n" id="navDiff"></span></button>
+      <button class="navitem" data-panel="window">窗口回放</button>
+      <button class="navitem" data-panel="episodes">情境索引</button>
+      <button class="navitem" data-panel="topics">主题簇</button>
+      <button class="navitem" data-panel="bill">消费账单</button>
       <button class="navitem" data-panel="score">记忆方案</button>
     </nav>
     <div class="side-foot">
@@ -380,6 +410,12 @@
         <div class="row"><span class="k">轮转阈值</span><span class="v" id="thr">—</span></div>
         <div class="row"><span class="k">近 5 轮取最大</span><span class="v" id="max5">—</span></div>
         <div class="row"><span class="k">已注入事实卡</span><span class="v" id="inj">—</span></div>
+      </div>
+      <div class="card">
+        <h2>折叠检测</h2>
+        <div class="row"><span class="k">预设组件</span><span class="v" id="foldPreset">—</span></div>
+        <div class="row"><span class="k">已折叠会话</span><span class="v" id="foldSessions">—</span></div>
+        <div class="foot" id="foldNote">—</div>
       </div>
       <div class="card">
         <h2>开关</h2>
@@ -490,7 +526,7 @@
         <h2>数据目录 <span class="badge" id="dirTag">—</span></h2>
         <div class="ctl" style="grid-template-columns:auto minmax(0,1fr)">
           <label>记忆文件路径</label>
-          <input type="text" class="mono" id="dirInput" data-k="dir" spellcheck="false" style="max-width:none" placeholder="例如 %USERPROFILE%\\.deepseek-memory\\data">
+          <input type="text" class="mono" id="dirInput" data-k="dir" spellcheck="false" style="max-width:none" placeholder="~/.deepseek-memory/data">
         </div>
         <div class="actions" style="margin-top:12px">
           <button class="mini" onclick="testDir()">测试</button>
@@ -541,6 +577,14 @@
     <!-- 7 记忆方案 -->
     <section class="panel" id="p-score" hidden>
       <div class="card">
+        <h2>数据导出</h2>
+        <div class="actions" style="margin:0">
+          <button class="mini" onclick="exportMemory(false)">导出 JSON</button>
+          <button class="mini" onclick="exportMemory(true)">导出 JSON + 逐轮窗口</button>
+        </div>
+        <div class="foot">导出的是当前真源：长期事实、主题与槽位、情境索引、事实卡。附带逐轮窗口时文件会大很多（含每一轮的窗口原文）。</div>
+      </div>
+      <div class="card">
         <h2>遗忘模型</h2>
         <div class="ctl" style="grid-template-columns:auto 1fr">
           <label>模型</label><select data-s="model" style="max-width:340px">
@@ -583,6 +627,75 @@
         <div class="foot">保守 = 更爱留（半衰期长、降级慢）；激进 = 更爱丢（半衰期短、早淘汰）。改完自动存 <span class="mono">workbench/config.json</span>，再点「应用到线上」才进桥接配置。二维模型公式见 <span class="mono">记忆方案-v7.md §4.5</span>。</div>
       </div>
     </section>
+
+    <!-- 9 窗口回放 -->
+    <section class="panel" id="p-window" hidden>
+      <div class="card">
+        <h2>窗口回放 <span class="dim" id="winMeta" style="font-size:13px;font-weight:400">—</span></h2>
+        <div class="ctl" style="grid-template-columns:max-content minmax(180px,320px) max-content 90px max-content;justify-content:start;gap:10px;align-items:center">
+          <label for="winSess">会话</label>
+          <select id="winSess" onchange="loadWindow()"></select>
+          <label for="winLimit">最近</label>
+          <input type="number" id="winLimit" value="40" min="5" max="200" step="5" onchange="loadWindow()">
+          <button class="mini" onclick="loadWindow()">刷新</button>
+        </div>
+        <div id="winList" class="winlist">加载中…</div>
+        <div class="foot">这里是她那一侧窗口的逐字账本：用户原话、她真正发出的话、她当时的想法、被切走的感受。检索命中时按 turn 区间展开真实上下文。</div>
+      </div>
+    </section>
+
+    <!-- 10 情境索引 -->
+    <section class="panel" id="p-episodes" hidden>
+      <div class="card">
+        <h2>情境索引 <span class="dim" id="epMeta" style="font-size:13px;font-weight:400">—</span></h2>
+        <div class="ctl" style="grid-template-columns:max-content 90px max-content;justify-content:start;gap:10px;align-items:center">
+          <label for="epDays">最近天数</label>
+          <input type="number" id="epDays" value="14" min="1" max="365" onchange="loadEpisodes()">
+          <button class="mini" onclick="loadEpisodes()">刷新</button>
+        </div>
+        <div id="epList">加载中…</div>
+        <div class="foot">一段连续对话 = 一个情境段。标题与想法由模型补写；「回填」段来自 DSH 会话日志，展开的是当时真实窗口（可能标记为非实时）。</div>
+      </div>
+    </section>
+
+    <!-- 11 主题簇 -->
+    <section class="panel" id="p-topics" hidden>
+      <div class="card">
+        <h2>主题簇 <span class="dim" id="topMeta" style="font-size:13px;font-weight:400">—</span></h2>
+        <div id="topList">加载中…</div>
+        <div class="foot">事实按「主题 → 槽位」成簇：同槽只留最新，多值并列；未挂主题的计入「其他」。</div>
+      </div>
+    </section>
+
+    <!-- 12 消费账单 -->
+    <section class="panel" id="p-bill" hidden>
+      <div class="card">
+        <h2>API 消费 <span class="dim" id="billMeta" style="font-size:13px;font-weight:400">—</span></h2>
+        <div class="ctl" style="grid-template-columns:max-content minmax(150px,240px) max-content minmax(170px,280px) max-content 90px max-content;justify-content:start;gap:10px;align-items:center;flex-wrap:wrap">
+          <label for="billScope">范围</label>
+          <select id="billScope" onchange="loadBill()"><option value="private:10001">本对话（QQ 私聊）</option><option value="all">全部会话</option></select>
+          <label for="billSess">会话</label>
+          <select id="billSess" onchange="loadBill()"><option value="all">该范围内全部</option></select>
+          <label for="billTurn">轮次类型</label>
+          <select id="billTurn" onchange="loadBill()"><option value="all">全部轮次</option><option value="owner">用户触发</option><option value="wake">唤醒/派生</option><option value="unknown">旧记录（无账本）</option></select>
+          <label for="billRange">最近天数</label>
+          <input type="number" id="billRange" value="14" min="1" max="90" onchange="loadBill()">
+          <button class="mini" onclick="loadBill()">刷新</button>
+        </div>
+        <div class="rows2" id="billKind"></div>
+        <div style="height:8px"></div>
+        <div class="rows2" id="billTotals"></div>
+        <div style="height:10px"></div>
+        <div class="tscroll"><table class="bill"><thead><tr><th>日期</th><th>调用</th><th>输入</th><th>缓存命中</th><th>输出</th><th>花费</th></tr></thead><tbody id="billDays"></tbody></table></div>
+        <div style="height:12px"></div>
+        <div class="tscroll"><table class="bill"><thead><tr><th>模型</th><th>调用</th><th>tokens</th><th>花费</th></tr></thead><tbody id="billModels"></tbody></table></div>
+        <div style="height:16px"></div>
+        <h2 style="font-size:15px;margin:0 0 10px">记忆侧模型调用 <span class="dim" id="billMemMeta" style="font-size:13px;font-weight:400">—</span></h2>
+        <div class="rows2" id="billMem"></div>
+        <div class="foot" id="billFoot">只统计逐轮采样（k=turn）；会话基线快照（k=base，累计值）不计费。<br>聊天用量来自 logs/token-usage.jsonl；记忆侧（交接/事实卡/抽取/情境/条目）来自 logs/memory-usage.jsonl，同一价格表计价。</div>
+      </div>
+    </section>
+
   </main>
 </div>
 <div class="toast" id="toast"></div>
@@ -603,10 +716,116 @@ const ago = (ms) => {
 
 let STATE = null;
 
+
+/* ============ 3.0 视图：窗口 / 情境 / 主题 / 账单 ============ */
+const wbEsc = (s) => String(s == null ? '' : s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+const wbTime = (ms) => (ms ? new Date(ms).toLocaleString('zh-CN', { hour12: false, month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }) : '—');
+const wbN = (n) => Number(n || 0).toLocaleString('zh-CN');
+const wbMoney = (n) => '¥' + Number(n || 0).toFixed(3);
+
+async function loadWindow() {
+  const box = $('winList');
+  const sel = $('winSess');
+  try {
+    const q = new URLSearchParams();
+    if (sel.value) q.set('session', sel.value);
+    q.set('limit', $('winLimit').value || '40');
+    const r = await api('/api/window?' + q.toString());
+    if (!sel.dataset.filled) {
+      sel.innerHTML = r.sessions.map((s) => '<option value="' + wbEsc(s.sessionId) + '">' + wbEsc(s.sessionId.slice(0, 20)) + '… · ' + s.turns + ' 轮 · ' + wbTime(s.lastAt) + '</option>').join('');
+      sel.dataset.filled = '1';
+      if (r.sessions[0]) sel.value = r.sessions[0].sessionId;
+    }
+    $('winMeta').textContent = '共 ' + r.total + ' 轮';
+    box.innerHTML = r.items.length ? r.items.map((t) => {
+      const sp = t.spoken.length ? t.spoken.map((x) => '<div>（她说）' + wbEsc(x) + '</div>').join('') : '';
+      const th = t.reply ? '<div>（当时的想法）' + wbEsc(t.reply.slice(0, 600)) + '</div>' : '';
+      const fe = t.feels.length ? '<div class="tf">（心里那句）' + t.feels.map(wbEsc).join(' / ').slice(0, 300) + '</div>' : '';
+      return '<div class="turn"><div class="th"><span class="tag">#' + t.turn + '</span><span>' + wbTime(Date.parse(t.at)) + '</span>' +
+        '<span>' + wbN(t.chars) + ' 字</span>' + (t.incomplete ? '<span class="tag">未收尾</span>' : '') +
+        (t.synthetic ? '<span class="tag">唤醒</span>' : '') +
+        t.blocks.map((b) => '<span class="tag">' + wbEsc(b.k) + ':' + wbN(b.chars) + '</span>').join('') + '</div>' +
+        '<div class="tu">' + wbEsc(t.user || '（无用户原话）') + '</div>' + sp + th + fe + '</div>';
+    }).join('') : '<div class="dim">还没有窗口记录</div>';
+  } catch (e) { box.innerHTML = '<div class="dim">加载失败：' + wbEsc(e.message) + '</div>'; }
+}
+
+async function loadEpisodes() {
+  const box = $('epList');
+  try {
+    const r = await api('/api/episodes?days=' + ($('epDays').value || '14'));
+    $('epMeta').textContent = '共 ' + r.count + ' 段（最近 ' + r.days + ' 天）';
+    box.innerHTML = r.items.length ? r.items.map((ep) => '<div class="epitem"><div class="t">' + wbEsc(ep.title || '（未命名情境）') + '</div>' +
+      '<div class="m">' + wbEsc(ep.day || '') + ' · 轮 ' + ep.turnFrom + '–' + ep.turnTo + ' · ' + wbEsc(ep.fidelity || 'live') +
+      ' · 想法 ' + ep.thoughts + ' · 感受 ' + ep.feelings + (ep.summarized ? '' : ' · 未摘要') + '</div>' +
+      (ep.scene ? '<div class="s">' + wbEsc(ep.scene) + '</div>' : '') +
+      (ep.topics.length ? '<div class="m">主题：' + ep.topics.map(wbEsc).join(' / ') + '</div>' : '') + '</div>').join('') : '<div class="dim">该区间没有情境段</div>';
+  } catch (e) { box.innerHTML = '<div class="dim">加载失败：' + wbEsc(e.message) + '</div>'; }
+}
+
+async function loadTopics() {
+  const box = $('topList');
+  try {
+    const r = await api('/api/topics');
+    $('topMeta').textContent = r.count + ' 个主题 · 未挂事实 ' + r.orphan;
+    box.innerHTML = r.items.map((t) => '<div class="topitem"><div class="th">' + wbEsc(t.name) + ' <span class="dim" style="font-size:12px">' + t.count + ' 条</span></div>' +
+      t.slots.map((s) => '<div class="slot"><b>' + wbEsc(s.label || s.slot) + '</b> ' + s.values.map(wbEsc).join(' · ') + (s.more ? ' …另 ' + s.more + ' 条' : '') + '</div>').join('') + '</div>').join('') +
+      (r.orphan ? '<div class="dim" style="margin-top:10px">未挂主题 ' + r.orphan + ' 条</div>' : '');
+  } catch (e) { box.innerHTML = '<div class="dim">加载失败：' + wbEsc(e.message) + '</div>'; }
+}
+
+const BILL_SCOPE_LABEL = (k) => k === 'all' ? '全部会话' : k === 'private:10001' ? '本对话（QQ 私聊）' : k.startsWith('group:') ? '群聊 ' + k.slice(6) : k.startsWith('internal:') ? '内部任务' : k;
+
+async function loadBill() {
+  try {
+    const scope = ($('billScope') && $('billScope').value) || 'private:10001';
+    const days = ($('billRange') && $('billRange').value) || '14';
+    const sess = ($('billSess') && $('billSess').value) || 'all';
+    const turn = ($('billTurn') && $('billTurn').value) || 'all';
+    const r = await api('/api/usage?days=' + days + '&scope=' + encodeURIComponent(scope) + (sess && sess !== 'all' ? '&session=' + encodeURIComponent(sess) : '') + (turn && turn !== 'all' ? '&turn=' + encodeURIComponent(turn) : ''));
+    if ($('billSess') && Array.isArray(r.bySession) && $('billSess').dataset.scope !== scope) {
+      $('billSess').innerHTML = '<option value="all">该范围内全部</option>' + r.bySession.map((s) => '<option value="' + wbEsc(s.sessionId) + '">' + wbEsc(s.sessionId.slice(0, 16)) + '… · ' + s.calls + ' 次 · ' + wbMoney(s.cost) + '</option>').join('');
+      $('billSess').dataset.scope = scope;
+      $('billSess').value = 'all';
+    }
+    if ($('billScope') && !$('billScope').dataset.filled && Array.isArray(r.scopes)) {
+      const opts = [{ key: 'private:10001', label: '本对话（QQ 私聊）' }, { key: 'all', label: '全部会话' }]
+        .concat(r.scopes.filter((s) => s.key !== 'private:10001').map((s) => ({ key: s.key, label: BILL_SCOPE_LABEL(s.key) })));
+      $('billScope').innerHTML = opts.map((o) => '<option value="' + wbEsc(o.key) + '">' + wbEsc(o.label) + '</option>').join('');
+      $('billScope').dataset.filled = '1';
+      $('billScope').value = scope;
+    }
+    const t = r.totals;
+    $('billMeta').textContent = BILL_SCOPE_LABEL(r.scope || scope) + (r.session && r.session !== 'all' ? ' · ' + r.session.slice(0, 16) + '…' : '') + ' · ' + r.totals.calls + ' 次调用 · 价格表 ' + (r.priceVersion || '不可用');
+    const cells = [
+      ['总花费', wbMoney(t.cost)], ['调用', wbN(t.calls)], ['tokens', wbN(t.tokens)],
+      ['输入', wbN(t.cacheHit + t.cacheMiss + t.cacheWrite)], ['缓存命中率', (t.hitRate * 100).toFixed(1) + '%'], ['输出', wbN(t.output)],
+    ];
+    if ($('billMem')) {
+      const mem = r.memory || { totals: { calls: 0, cost: 0, fail: 0 }, byCaller: [] };
+      const lbl = { handover: '轮转交接', profile: '事实卡', extract: '日终抽取', episode: '情境摘要', entry: '条目抽取', model: '其它' };
+      $('billMemMeta').textContent = mem.totals.calls + ' 次 · ' + wbMoney(mem.totals.cost) + (mem.totals.fail ? ' · 失败 ' + mem.totals.fail : '');
+      $('billMem').innerHTML = mem.byCaller.length
+        ? mem.byCaller.map((m) => '<div class="cell"><div class="k2">' + (lbl[m.caller] || m.caller) + '</div><div class="v2">' + wbMoney(m.cost) + '</div><div class="k2">' + wbN(m.calls) + ' 次' + (m.fail ? ' · 失败 ' + m.fail : '') + '</div></div>').join('')
+        : '<div class="dim">还没有记忆侧调用记录（今晚日终后开始有）。</div>';
+    }
+    if ($('billKind')) {
+      const lbl = { owner: '用户触发', wake: '唤醒/派生', unknown: '旧记录（无账本）', setup: '基线快照（不计费）' };
+      $('billKind').innerHTML = (r.byKind || []).filter((k) => k.kind !== 'setup').map((k) => '<div class="cell"><div class="k2">' + (lbl[k.kind] || k.kind) + '</div><div class="v2">' + wbMoney(k.cost) + '</div><div class="k2">' + wbN(k.calls) + ' 次</div></div>').join('');
+    }
+    $('billTotals').innerHTML = cells.map(([k, v]) => '<div class="cell"><div class="k2">' + k + '</div><div class="v2">' + v + '</div></div>').join('');
+    $('billDays').innerHTML = r.byDay.map((d) => '<tr><td>' + d.day + '</td><td>' + wbN(d.calls) + '</td><td>' + wbN(d.cacheHit + d.cacheMiss + d.cacheWrite) + '</td><td>' + wbN(d.cacheHit) + '</td><td>' + wbN(d.output) + '</td><td>' + wbMoney(d.cost) + '</td></tr>').join('');
+    $('billModels').innerHTML = r.byModel.map((m) => '<tr><td>' + wbEsc(m.model) + '</td><td>' + wbN(m.calls) + '</td><td>' + wbN(m.tokens) + '</td><td>' + wbMoney(m.cost) + '</td></tr>').join('');
+  } catch (e) { $('billTotals').innerHTML = '<div class="dim">加载失败：' + wbEsc(e.message) + '</div>'; }
+}
+
+const WB_LOADERS = { window: loadWindow, episodes: loadEpisodes, topics: loadTopics, bill: loadBill };
+
 /* ============ 面板切换：一次只显示一个 ============ */
 const PANEL_TITLE = {
   ctx: '上下文与轮转', card: '事实卡', lib: '记忆库', facts: '长期事实',
   graph: '记忆星图', sess: '会话与策略', tune: '调控台', score: '记忆方案',
+  window: '窗口回放', episodes: '情境索引', topics: '主题簇', bill: '消费账单',
 };
 const PANEL_KEY = 'wb-panel2'; // 仅记录，用于刷新后回到同一面板（启动固定走记忆星图）
 function showPanel(name) {
@@ -618,6 +837,7 @@ function showPanel(name) {
   document.body.classList.toggle('starmode', id === 'graph'); // 星图是全窗口的
   window.scrollTo({ top: 0 });
   if (id === 'graph') mountStar();
+  if (WB_LOADERS[id]) WB_LOADERS[id]();
 }
 // 兜底：脚本还没就绪时轮询几次再挂载（曾经因为 script 顺序导致星图只画一帧就“卡住”）
 let starTries = 0;
@@ -667,6 +887,22 @@ function fontStep(d) {
   applyFont((Number(wrap && wrap.style.zoom) || 1) + d);
 }
 function fontReset() { applyFont(1); }
+
+async function exportMemory(withWindow) {
+  try {
+    const r = await fetch('/api/export' + (withWindow ? '?window=1' : ''));
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const data = await r.json();
+    const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+    const a = document.createElement('a');
+    const ts = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-');
+    a.href = URL.createObjectURL(blob);
+    a.download = 'memory-export-' + ts + (withWindow ? '-with-window' : '') + '.json';
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 3000);
+    toast('已导出 · 事实 ' + data.counts.facts + ' / 情境 ' + data.counts.episodes + (withWindow ? ' / 含逐轮窗口' : ''));
+  } catch (e) { toast('导出失败：' + e.message); }
+}
 
 function toast(msg) {
   const t = $('toast');
@@ -722,6 +958,20 @@ function render(s) {
     : mx >= t.threshold
       ? '已越过阈值，下一轮会触发轮转（受冷却限制）'
       : '还差 ' + nz(Math.max(0, t.threshold - mx)) + ' tokens';
+
+  // 折叠检测：预设里不能挂 compaction-basic / command-compact（§17）
+  const fd = s.folds || {};
+  const fh = (fd.presets && fd.presets.hits) || [];
+  $('foldPreset').innerHTML = fd.ok
+    ? '<span class="tag long">正常</span> 未挂 compaction'
+    : '<span class="tag bad">告警</span> ' + esc(fh.join('、') || '检测到折叠组件');
+  const folded = fd.folded || [];
+  $('foldSessions').innerHTML = folded.length
+    ? folded.map((x) => '<span class="tag warn" title="' + esc(x.foldedReason || '') + '">' + esc(String(x.sessionId || x.key).slice(0, 14)) + '…</span>').join(' ')
+    : '<span class="tag">无</span>';
+  const files = (fd.presets && fd.presets.files) || [];
+  $('foldNote').textContent = '检查 ' + files.filter((x) => x.exists).length + '/' + files.length + ' 个预设文件；'
+    + (fd.guard && fd.guard.exists ? '日志里出现过折叠事件（logs/fold-guard.log）' : '未出现过折叠事件');
 
   const s0 = s.sessions[0];
   $('inj').textContent = s0 ? (s0.injected ? '是' : '否') : '—';
@@ -794,22 +1044,29 @@ function render(s) {
 
   // 事实表
   $('navFacts').textContent = s.facts.length;
-  $('factBody').innerHTML = s.facts.length ? s.facts.map((f) => `
-    <tr><td class="mono dim" data-l="id" title="${esc(f.id || '')}">${esc('#')}${esc((f.id || '').slice(-6))}</td>
-      <td data-l="内容"><span class="ftxt">${esc(f.text || '')}</span>${f.v10 ? `<div class="dim mono v10meta" title="措辞：${esc(f.v10.qLabel || '')}">D ${f.v10.d} · Q ${f.v10.q}（${esc(f.v10.qLevel || '')}） · E ${f.v10.e} · C ${f.v10.c} · A ${f.v10.a}${f.v10.frags ? ' · 碎片 ' + f.v10.frags : ''}</div>` : ''}</td>
+  $('factBody').innerHTML = s.facts.length ? s.facts.map((f) => {
+  const body = (f.label && f.label !== 'profile' && f.label !== 'note') ? `${f.label}：${f.value || ''}` : (f.text || '');
+  const merged = f.status === 'merged';
+  const dead = merged || Boolean(f.invalidated);
+  return `
+    <tr class="${dead ? 'dimrow' : ''}"><td class="mono dim" data-l="id" title="${esc(f.id || '')}">${esc('#')}${esc((f.id || '').slice(-6))}</td>
+      <td data-l="内容"><span class="ftxt">${esc(body)}</span>${f.v10 ? `<div class="dim mono v10meta" title="措辞：${esc(f.v10.qLabel || '')}">D ${f.v10.d} · Q ${f.v10.q}（${esc(f.v10.qLevel || '')}） · E ${f.v10.e} · C ${f.v10.c} · A ${f.v10.a}${f.v10.frags ? ' · 碎片 ' + f.v10.frags : ''}</div>` : ''}</td>
       <td data-l="档"><span class="tag ${esc(f.tier || '')}">${esc(f.tier || '?')}</span></td>
       <td class="num" data-l="分">${f.score ?? f.base ?? '—'}</td>
-      <td class="edt" data-l="调档 / 调分"><div class="edtctl"><select id="tier-${esc(f.id)}">${['hard', 'long', 'general', 'temp']
+      <td class="edt" data-l="调档 / 调分"><div class="edtctl" style="${dead ? 'opacity:.4;pointer-events:none' : ''}"><select id="tier-${esc(f.id)}"${dead ? ' disabled' : ''}>${['hard', 'long', 'general', 'temp']
         .map((t) => `<option value="${t}"${t === (f.tier || 'general') ? ' selected' : ''}>${t}</option>`).join('')}</select>
-        <input id="score-${esc(f.id)}" type="number" min="1" max="100" step="1" value="${f.score ?? f.base ?? 50}">
-        <button class="mini" onclick="factSave('${esc(f.id)}')">存</button>
+        <input id="score-${esc(f.id)}" type="number" min="1" max="100" step="1" value="${f.score ?? f.base ?? 50}"${dead ? ' disabled' : ''}>
+        <button class="mini" onclick="factSave('${esc(f.id)}')"${dead ? ' disabled' : ''}>存</button>
         ${f.manual ? `<button class="mini" onclick="fact('${esc(f.id)}','reset')">还原</button>` : ''}</div></td>
-      <td class="num" data-l="状态"><div class="actctl">${f.invalidated
+      <td class="num" data-l="状态"><div class="actctl">${merged
+        ? `<span class="tag inv" title="已并进 ${esc(f.mergedInto || '')}">已合并 → #${esc((f.mergedInto || '').slice(-6))}</span> <button class="mini" onclick="fact('${esc(f.id)}','unmerge')">拆开</button>`
+        : f.invalidated
         ? `<span class="tag inv">作废</span> <button class="mini" onclick="fact('${esc(f.id)}','reinstate')">撤销</button>`
-        : `<button class="mini danger" onclick="fact('${esc(f.id)}','invalidate')">作废</button>`}</div></td></tr>`).join('')
+        : `<button class="mini danger" onclick="fact('${esc(f.id)}','invalidate')">作废</button>`}</div></td></tr>`;
+  }).join('')
     : '<tr><td colspan="6" class="empty">尚无长期事实 — 打分引擎还没写入过，此处会随 longterm.jsonl 出现自动填充</td></tr>';
   $('factFoot').textContent = s.facts.length
-    ? '调档 = 人工设定目标档位与分数（换算成 I，之后仍按该档衰减，可随时还原）；作废 = 墓碑标记 + 审计留痕，不删行。'
+    ? '调档 = 人工设定目标档位与分数（换算成 I，之后仍按该档衰减，可随时还原）；作废 = 墓碑标记 + 审计留痕，不删行；已合并的可以「拆开」恢复成独立事实。'
     : '首版 longterm.jsonl 为空属正常：打分与四档还没上线。';
 
   // 调控台
@@ -940,7 +1197,7 @@ async function saveV10() {
 }
 
 /* ---- 数据目录 + 控制台 ---- */
-const DEFAULT_DIR = '';  // 由 /api/state 的 defaultDir 提供
+const DEFAULT_DIR = '';
 
 async function probeDirReq(create) {
   const j = await api('/api/checkdir', { dir: $('dirInput').value.trim(), create: !!create });

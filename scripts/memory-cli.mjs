@@ -1,16 +1,15 @@
 #!/usr/bin/env node
 // 记忆库命令行（§10 步 6 的 CLI 入口；只服务本机手动操作）。
 //
-//   node scripts/memory-cli.mjs init                 # 建数据目录 + rules.md 模板
 //   node scripts/memory-cli.mjs status
 //   node scripts/memory-cli.mjs doctor
+//   node scripts/memory-cli.mjs health       # 桥接/工作台/开关/日终（端口走 TCP 探测，退出码 0/1）
 //   node scripts/memory-cli.mjs recall 生日          # 长期事实检索（四档排序）
 //   node scripts/memory-cli.mjs recall --all         # 全量，按档位
 //   node scripts/memory-cli.mjs card                 # 预览投影后的事实卡
 //   node scripts/memory-cli.mjs invalidate <id|sig> --reason "记错了" [--cascade]
 //   node scripts/memory-cli.mjs reinstate <id>
-//   node scripts/memory-cli.mjs search 火锅          # 聊天原文（7 天日志 + 归档）
-//   node scripts/memory-cli.mjs refresh-card         # 立刻按事实库重排事实卡
+//   node scripts/memory-cli.mjs search 擂饭          # 聊天原文（7 天日志 + 归档）
 //
 // 约定：只加事件、永不物理删（作废=invalidate 事件 + 审计行）；默认 dry-run 之外的操作都会立刻落盘。
 
@@ -25,10 +24,9 @@ import * as store from '../src/store.mjs';
 import * as inv from '../src/invalidate.mjs';
 import { createMemoryEngine } from '../src/engine.mjs';
 import { createNullHost } from '../src/host.mjs';
-import { memorySection, ownerQQ, loadConfig } from '../src/config.mjs';
-import { probePort } from '../src/portprobe.mjs';
-import { resolveDataDir, ensureDir } from '../src/paths.mjs';
-import { storageReport } from '../src/storage.mjs';
+import { loadConfig, memorySection, ownerQQ } from '../src/config.mjs';
+import { PROBE_BLOCKED, PROBE_REFUSED, probePort } from '../src/portprobe.mjs';
+import { storageReport, summarizeStorage } from '../src/storage.mjs';
 import { normalizeScoring, search as searchFacts, explainFact } from '../src/scoring-runner.mjs';
 import { describe } from '../src/score.mjs';
 
@@ -57,7 +55,13 @@ function fmtFact(f) {
   const label = f.label && !['profile', 'note'].includes(f.label) ? `${f.label}：` : '';
   const value = String(f.value || f.text || '').replace(/\s+/g, ' ').slice(0, 100);
   const status = !f.status || f.status === 'active' ? '' : ` [${f.status}]`;
-  return `· [${tier} ${Math.round(Number(f.score) || 0)}] ${f.id}${status} ${label}${value}`;
+  let score = Number(f.score);
+  if (!Number.isFinite(score)) {
+    try {
+      score = describe(f, Date.now(), normalizeScoring(memorySection()?.scoring || {})).score;
+    } catch { score = 0; }
+  }
+  return `· [${tier} ${Math.round(score)}] ${f.id}${status} ${label}${value}`;
 }
 
 function audit(row) {
@@ -95,13 +99,13 @@ function cmdStatus() {
 
 function cmdRecall({ pos, flags }) {
   const query = flags.all ? '' : pos.join(' ').trim();
-  const dir = resolveDataDir({ configDir: memorySection().dir || '' });
+  const dir = longterm.paths().root;
   const rows = searchFacts({
     query,
     limit: Number(flags.limit) || 20,
+    dir,
     scoring: normalizeScoring(memorySection()?.scoring || {}),
-    includeInvalidated: Boolean(flags.invalidated),
-    dir
+    includeInvalidated: Boolean(flags.invalidated)
   });
   if (!rows.length) {
     console.log(query ? `长期库里没有「${query}」的记录。` : '长期库还是空的。');
@@ -186,7 +190,7 @@ function cmdSearch({ pos, flags }) {
     return;
   }
   for (const it of items) {
-    const who = it.role === 'assistant' ? '助手' : it.sender || '用户';
+    const who = it.role === 'assistant' ? '小助手' : it.sender || '用户';
     console.log(`[${it.date || it.ts}] ${who}：${String(it.text || '').replace(/\s+/g, ' ').slice(0, 200)}`);
   }
 }
@@ -201,72 +205,44 @@ function cmdDue() {
     console.log(`${f.due}  ${when}  ${f.notifiedAt ? '已提醒' : '未提醒'}  ${f.label || f.sig}：${String(f.value || '').slice(0, 60)}`);
   }
 }
-/** init：建目录 + 生成 rules.md 模板（已存在就跳过）。 */
-function cmdInit() {
-  const dir = resolveDataDir({ configDir: memorySection().dir || '' });
-  ensureDir(dir);
-  const r = rules.ensureRules(dir);
-  console.log('数据目录：' + dir);
-  console.log('规则文件：' + r.file + (r.created ? '（已生成模板）' : '（已存在，未覆盖）'));
-  console.log('接下来：把 config.json 的 memory.dir 指到这个目录，或设 QQ_MEMORY_DIR。');
-}
-
-/** refresh-card：按当前事实库重排事实卡（不用等日终）。 */
-function cmdRefreshCard() {
-  const dir = resolveDataDir({ configDir: memorySection().dir || '' });
-  const facts = longterm.materializeWithShadow(dir);
-  if (!facts.length) { console.log('事实库是空的，先记几条再来。'); return; }
-  const cfg = card.normalizeCardConfig(memorySection().profile || {});
-  const built = card.buildCard(facts, cfg);
-  const out = card.writeCard(dir, built.text, cfg);
-  console.log(`事实卡已重排：${out.chars} 字 / 收录 ${built.included} 条 / 挤出 ${built.dropped} 条`);
-  if (out.backup) console.log('旧卡备份：' + out.backup);
-}
-
 const { cmd, pos, flags } = parse(process.argv.slice(2));
 try {
   switch (cmd) {
-    case 'init': cmdInit(); break;
-    case 'refresh-card': cmdRefreshCard(); break;
     case 'status': cmdStatus(); break;
     case 'recall': cmdRecall({ pos, flags }); break;
     case 'card': cmdCard(); break;
     case 'doctor': cmdDoctor(); break;
     case 'health': {
-      // 一条命令看全家：桥接/工作台/记忆开关/日终/到期。退出码 0=健康，1=有问题。
-      // 端口用纯 Node TCP 探测：不依赖 netstat/子进程（受限环境里 execSync 会被沙箱拦住，
-      // 旧实现还会把「探测失败」误报成「没在监听」）。三态：open=✓、refused=✗、blocked=? 不计失败。
-      const bridgePort = Number(loadConfig().consolePort) || 3100;
+      // 一条命令看全家：桥接/工作台/记忆开关/日终/到期。退出码 0=健康，1=确实有问题。
+      // 端口走纯 TCP 探测（src/portprobe.mjs）：沙箱里 execSync('netstat …') 会 EPERM，
+      // 以前据此判 ✗，会把活着的服务误报成宕机。探测被环境拦住时输出 ?（无法判定），不计入失败。
+      const cfg = loadConfig();
+      const bridgePort = Number(cfg.consolePort) || 3100;
       const wbPort = Number(process.env.WORKBENCH_PORT) || 7351;
-      const portRow = (label, port, p) => {
-        const suffix = p.state === 'refused'
-          ? '（没在监听）'
-          : p.state === 'blocked' ? `（无法判定 ${p.code || '探测被拦'}）` : '';
-        return [`${label} ${port}${suffix}`, p.state === 'open' ? '✓' : p.state === 'refused' ? '✗' : '?', p.ok === true];
+      const [bridge, wb] = await Promise.all([probePort(bridgePort), probePort(wbPort)]);
+      const portRow = (name, r) => {
+        if (r.state === 'open') return [name, true, ''];
+        if (r.state === PROBE_REFUSED) return [name, false, '没在监听'];
+        return [name, null, `无法判定（${r.code || PROBE_BLOCKED}）`]; // 不计入失败
       };
-      const [bProbe, wProbe] = await Promise.all([probePort(bridgePort), probePort(wbPort)]);
       const memSt = (() => { try { return JSON.parse(fs.readFileSync(path.join(store.dataDir(), 'state', 'memory.json'), 'utf8')); } catch { return {}; } })();
       const daily = memSt.lastDailyAt ? new Date(memSt.lastDailyAt) : null;
       const hours = daily ? (Date.now() - daily.getTime()) / 3600e3 : 999;
+      // 数据体积与磁盘：只读告警（超限不算「坏」，用 ! 提示，不计入退出码）。
+      const stg = (() => { try { return storageReport({ dir: store.dataDir(), storage: memorySection()?.storage }); } catch { return null; } })();
       const rows = [
-        portRow('桥接', bridgePort, bProbe),
-        portRow('工作台', wbPort, wProbe),
-        ['记忆开关', memorySection()?.enabled !== false ? '✓' : '✗', memorySection()?.enabled !== false],
-        [`日终新鲜（${hours === 999 ? '从未' : hours.toFixed(1) + ' 小时前'}）`, hours < 26 ? '✓' : '✗', hours < 26]
+        portRow(`桥接 ${bridgePort}`, bridge),
+        portRow(`工作台 ${wbPort}`, wb),
+        ['记忆开关', memorySection()?.enabled !== false, ''],
+        [`日终新鲜（${hours === 999 ? '从未' : hours.toFixed(1) + ' 小时前'}）`, hours < 26, ''],
+        // warn（!）只提示不判失败：体积/磁盘到阈值时该收拾，但服务与记忆本身没坏。
+        [`数据体积（${stg ? stg.dataMb + ' MB / 上限 ' + stg.maxDataMb + ' MB；磁盘剩余 ' + (stg.freeGb == null ? '?' : stg.freeGb + ' GB') : '未知'}）`, stg ? (stg.level === 'ok' ? true : 'warn') : null, '']
       ];
-      // 数据体积与磁盘：只读告警（! 提示，不计失败）。
-      try {
-        const stg = storageReport({ dir: resolveDataDir({ configDir: memorySection()?.dir || '' }), storage: memorySection()?.storage });
-        rows.push([
-          `数据体积（${stg.dataMb} MB / 上限 ${stg.maxDataMb} MB；磁盘剩余 ${stg.freeGb == null ? '?' : stg.freeGb + ' GB'}）`,
-          stg.level === 'ok' ? '✓' : '!',
-          true
-        ]);
-      } catch {
-        rows.push(['数据体积（检查失败）', '?', true]);
-      }
       let bad = 0;
-      for (const [name, mark, ok] of rows) { console.log(`${mark} ${name}`); if (!ok) bad++; }
+      for (const [name, ok, hint] of rows) {
+        console.log(`${ok === true ? '✓' : ok === false ? '✗' : ok === 'warn' ? '!' : '?'} ${name}${hint ? `（${hint}）` : ''}`);
+        if (ok === false) bad++;
+      }
       try { cmdDue(); } catch {}
       process.exitCode = bad ? 1 : 0;
       break;
@@ -294,6 +270,60 @@ try {
       console.log(`已还原 ${id} 为自动衰减`);
       break;
     }
+    case 'merge': {
+      const pos2 = pos || [];
+      const into = flags.into || pos2[0];
+      const ids = String(flags.ids || pos2.slice(1).join(',')).split(',').map((s) => s.trim()).filter(Boolean);
+      if (!into || !ids.length) {
+        console.error('用法：merge <保留的id> <并进来的id...> [--value 新值] [--label 标签] [--quote 原文]');
+        console.error('  例：merge h-a h-b --value "摄影（Z8X、2875ZA）" --label 爱好');
+        process.exitCode = 1;
+        break;
+      }
+      const dir = longterm.paths().root;
+      const before = longterm.materialize(longterm.readEvents(dir).rows, longterm.readInvalidated(dir));
+      const dst = before.find((f) => f.id === into);
+      if (!dst) { console.error(`没有这条事实：${into}`); process.exitCode = 1; break; }
+      const missing = ids.filter((x) => !before.some((f) => f.id === x));
+      if (missing.length) { console.error(`这些 id 不存在：${missing.join(', ')}`); process.exitCode = 1; break; }
+      const at = Date.now();
+      if (flags.value || flags.label || flags.quote) {
+        const sv = { ev: 'supersede', id: into, at, by: 'cli' };
+        if (flags.value) sv.value = flags.value;
+        if (flags.label) sv.label = flags.label;
+        if (flags.quote) sv.quote = flags.quote;
+        longterm.appendEvent(sv);
+      }
+      longterm.appendEvent({ ev: 'merge', id: into, ids, into, at, by: 'cli', reason: flags.reason || '' });
+      const after = longterm.materialize(longterm.readEvents(dir).rows, longterm.readInvalidated(dir));
+      console.log(`已合并：${ids.join(', ')} → ${into}（源条目退出卡片与检索，原文与审计保留）`);
+      console.log(`  ${fmtFact(after.find((f) => f.id === into))}`);
+      break;
+    }
+    case 'unmerge': {
+      const id = pos[0];
+      if (!id) {
+        console.error('用法：unmerge <被合并掉的id>');
+        console.error('  例：unmerge h-20261102-63acd5   # 把它从合并里拆出来，恢复成普通事实');
+        process.exitCode = 1;
+        break;
+      }
+      const dir = longterm.paths().root;
+      const before = longterm.materialize(longterm.readEvents(dir).rows, longterm.readInvalidated(dir));
+      const src = before.find((f) => f.id === id);
+      if (!src) { console.error(`没有这条事实：${id}`); process.exitCode = 1; break; }
+      if (!src.mergedInto) {
+        console.error(`这条没有被合并（status=${src.status}），不用拆。`);
+        process.exitCode = 1;
+        break;
+      }
+      const into = src.mergedInto;
+      longterm.appendEvent({ ev: 'unmerge', id, at: Date.now(), by: 'cli', reason: flags.reason || '' });
+      const after = longterm.materialize(longterm.readEvents(dir).rows, longterm.readInvalidated(dir));
+      console.log(`已拆开：${id} 从 ${into} 恢复为普通事实（可再调档/调分）`);
+      console.log(`  ${fmtFact(after.find((f) => f.id === id))}`);
+      break;
+    }
     case 'search': cmdSearch({ pos, flags }); break;
     case 'badhit': {
       const id = pos[0];
@@ -316,7 +346,9 @@ try {
     case 'budget': {
       const inj = inject.normalizeInject(memorySection()?.inject || {});
       const facts = longterm.materializeWithShadow();
-      const cardText = card.buildCard(facts, memorySection()?.profile || {}).text;
+      // 与线上一致：有主题表时按主题树投影（engine.buildProjectedCard 同款路径）
+      const engine = createMemoryEngine({ host: createNullHost({ ownerKey: KEY }) });
+      const cardText = engine.buildProjectedCard()?.text || card.buildCard(facts, memorySection()?.profile || {}).text;
       const rulesText = rules.rulesSection(longterm.paths().root, inj.budget.rules).text;
       const now = Date.now();
       const tasks = facts.filter((x) => x.status === 'active' && Number(x.dueAt) > 0 && Number(x.dueAt) + 3 * 86400000 >= now)
@@ -328,8 +360,39 @@ try {
       if (built.overflow > 0) console.log(`  超出总预算 ${built.overflow} 字`);
       break;
     }
+    case 'feel': {
+      const id = pos[0];
+      const text = (pos.slice(1).join(' ') || flags.value || '').trim();
+      if (!id || !text) { console.log('用法：node scripts/memory-cli.mjs feel <id> "当时的感觉（≤40 字）"'); process.exitCode = 1; break; }
+      const row = longterm.materializeWithShadow().find((x) => x.id === id);
+      if (!row) { console.log('没有这条事实：' + id); process.exitCode = 1; break; }
+      longterm.appendEvent({ ev: 'feel', id, fact: id, feel: String(text).slice(0, 40), by: flags.by || 'human', derived: false, at: Date.now() }, store.dataDir());
+      console.log('已记下：' + id + ' → 「' + String(text).slice(0, 40) + '」');
+      break;
+    }
+
     case 'due': cmdDue(); break;
 
+    case 'trace': {
+      const id = pos[0];
+      if (!id) { console.log('用法：trace <id>'); break; }
+      const rows = longterm.readEvents(longterm.paths().root).rows || [];
+      let fact = null;
+      let src = null;
+      for (const r of rows) {
+        if (r.ev === 'fact' && r.id === id) fact = r;
+        if (r.ev === 'src' && r.id === id) src = r.src;
+      }
+      if (!fact) { console.log('没有这条事实：' + id); break; }
+      const label = fact.label || fact.sig || '';
+      const value = String(fact.value || fact.text || '').slice(0, 80);
+      console.log(label + '：' + value);
+      if (!src) { console.log('└ 来源：未记录（跑 scripts/link-sources.mjs 可回填）'); break; }
+      if (src.kind === 'log') console.log('└ 来源：聊天原文 ' + (src.file || '') + (src.day ? '（' + src.day + '）' : ''));
+      else if (src.kind === 'card') console.log('└ 来源：事实卡 ' + (src.file || 'profile.md') + (src.backup ? '，对应备份 ' + src.backup : '') + '\n└ 卡片原文：' + (src.quote || ''));
+      else console.log('└ 来源：无聊天原文（' + (src.reason || '来自卡片投影') + '）');
+      break;
+    }
     case 'describe': {
       const f = longterm.materializeWithShadow().find((x) => x.id === pos[0]);
       if (!f) throw new Error(`没找到 ${pos[0]}`);
@@ -337,7 +400,8 @@ try {
       break;
     }
     default:
-      console.log('用法：node scripts/memory-cli.mjs <status|doctor|recall|card|due|invalidate|reinstate|search|describe> [参数]');
+      console.log('用法：node scripts/memory-cli.mjs <status|doctor|recall|card|due|feel|merge|invalidate|reinstate|search|describe> [参数]');
+      console.log('  recall <关键词> [--explain]   检索；--explain 显示 v10 激活值/可信度明细');
       process.exitCode = 2;
   }
 } catch (error) {

@@ -122,7 +122,7 @@ test('extractProfileFallback：只取用户一侧、保留旧卡 bullet、超长
   const { extractProfileFallback } = await import('../src/digest.mjs');
   const transcript = [
     '[2026-10-30 10:00] 用户：我生日是 9 月 5 日，记住',
-    '[2026-10-30 10:01] 助手：唔……人家记住了，快两点了',
+    '[2026-10-30 10:01] 小助手：唔……人家记住了，快两点了',
     '[2026-10-30 10:02] 用户：今天好累', // 没有事实词，不该进卡
   ].join('\n');
   const out = extractProfileFallback({
@@ -152,7 +152,7 @@ test('rotate：轮转摘要失败时照样换会话，交接退回提取式', as
   const digest = { summarizeHandover: async () => ({ ok: false, error: 'model down', mode: 'skip' }) };
   const engine = createMemoryEngine({ host, digest });
 
-  assert.equal(await engine.rotate(KEY, { force: true, reason: 'manual' }), true, '摘要失败不能阻断轮转');
+  assert.equal(await engine.rotate(KEY, { force: true, reason: 'manual', approved: true }), true, '摘要失败不能阻断轮转');
   assert.deepEqual(host.calls.retire, [KEY]);
   const handover = store.peekHandover(KEY);
   assert.ok(handover?.text.includes('【7 天记忆交接】'));

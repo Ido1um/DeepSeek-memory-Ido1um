@@ -11,6 +11,7 @@ import * as token from './token.mjs';
 import { paths, readInvalidated, readJsonl, readShadow, readShadowStats } from './longterm.mjs';
 import { unknownScoringKeys } from './score.mjs';
 import { storageReport, summarizeStorage } from './storage.mjs';
+import { auditPresets } from './preset-audit.mjs';
 
 function check(name, ok, detail = '') {
   return { name, ok: Boolean(ok), detail: String(detail || '') };
@@ -87,14 +88,15 @@ export function checkDataDir(dir, { config = {}, modelWindow = 0 } = {}) {
   })();
   const cfg = card.normalizeCardConfig(config.profile || {});
   const backups = card.listBackups(dir);
-  checks.push(check('事实卡存在', Boolean(cardText), cardText ? `${cardText.length} 字` : '还没有 profile.md'));
+  const fresh = !cardText && !exists(path.join(dir, 'state', 'longterm.jsonl')) && !exists(path.join(dir, 'window'));
+  checks.push(check('事实卡存在', Boolean(cardText) || fresh, cardText ? `${cardText.length} 字` : fresh ? '全新安装，还没有事实卡' : '还没有 profile.md'));
   checks.push(check('事实卡未超限', cardText.length <= cfg.maxChars + 200, `${cardText.length} / ${cfg.maxChars} 字`));
   checks.push(check('事实卡有备份', backups.length > 0 || !cardText, `${backups.length} 份`));
 
   // 4) token 日志与窗口
   const win = token.describeWindow({ config, dir, modelWindow, thresholdRatio: Number(config.rotation?.thresholdRatio ?? config.rotationThresholdRatio) || 0.7 });
   const turns = token.readTurns(dir).length;
-  checks.push(check('token 日志可用', turns > 0, `${turns} 轮可读；窗口 ${win.tokens}（${win.source}），阈值 ${win.threshold}`));
+  checks.push(check('token 日志可用', turns > 0 || fresh, fresh ? '全新安装，还没有轮次' : `${turns} 轮可读；窗口 ${win.tokens}（${win.source}），阈值 ${win.threshold}`));
 
   // 5) 策略与墓碑
   const st = policy.readPolicyState(dir);
@@ -105,6 +107,13 @@ export function checkDataDir(dir, { config = {}, modelWindow = 0 } = {}) {
   // 墓碑必须能找到原文：找不到就是孤儿墓碑（sidecar 被手改坏 / 事件被截断）。
   const orphans = tombIds.filter((id) => !ids.has(String(id)));
   checks.push(check('作废墓碑可读', orphans.length === 0, `${tombIds.length} 条${orphans.length ? `，${orphans.length} 条没有原文` : ''}`));
+  // 预设里不能挂对话压缩（compaction-basic / command-compact），否则窗口原文会被摘要替换（记忆 3.0 §17）。
+  try {
+    const preset = auditPresets();
+    checks.push(check('预设未挂折叠组件', preset.ok, preset.ok ? '未检测到 compaction-basic / command-compact' : preset.hits.join('、')));
+  } catch (e) {
+    checks.push(check('预设未挂折叠组件', false, '检查失败：' + (e?.message || e)));
+  }
   const unknownKeys = unknownScoringKeys(config.scoring || {});
   checks.push(check('打分配置无未知键', unknownKeys.length === 0, unknownKeys.length ? unknownKeys.join(', ') : 'ok'));
 

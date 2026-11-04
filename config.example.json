@@ -1,37 +1,46 @@
 {
-  // 复制成 config.json 后改这里。真实 config.json 不要提交到仓库。
+  "ownerQQ": "10001",
   "memory": {
     "enabled": true,
-    "dir": "",                       // 留空 = ~/.deepseek-memory/data；也可写绝对路径
+    "dir": "",
     "windowDays": 7,
     "dailyAt": "23:00",
     "maxCharsPerMessage": 8000,
-    "handoverMaxChars": 3500,
-
-    // 轮转：真实 token ≥ 比例 × 窗口
-    "contextWindowTokens": 0,        // 0 = 自动（模型元数据 > 已观测最大×1.15）
-    "rotationThresholdRatio": 0.7,
-    "rotationCooldownMs": 600000,
-    "minRotateTokens": 20000,
-
+    "maxSessionTokens": 60000,
+    "handoverMaxChars": 5000,
+    "handover": {
+      "recentSlice": {
+        "enabled": true,
+        "hours": 24,
+        "maxChars": 2400,
+        "perTurn": 600,
+        "fallbackTurns": 6,
+        "includeReply": true,
+        "replyChars": 160
+      }
+    },
+    "rotation": {
+      "thresholdRatio": 0.7,
+      "cooldownMs": 600000,
+      "minRotateTokens": 20000,
+      "contextWindowTokens": 0
+    },
+    "summary": {
+      "enabled": true,
+      "maxChars": 1800,
+      "timeoutMs": 30000,
+      "maxInputChars": 30000
+    },
     "profile": {
       "enabled": true,
-      "maxChars": 2000,
+      "maxChars": 1500,
       "hardReserveChars": 400,
       "botMaxChars": 200,
       "backupKeep": 5,
       "source": "auto",
-      "reinjectOnUpdate": true
+      "reinjectOnUpdate": true,
+      "tree": true
     },
-
-    // 打分：preset 可选 balanced（默认）/ conservative / aggressive
-    "scoring": {
-      "preset": "balanced",
-      "mode": "shadow",              // off | shadow（只采样）| write（真写长期库）
-      "model": "two-dimensional"
-    },
-
-    // 会话开关：默认只对白名单里的会话生效
     "policy": {
       "enabled": true,
       "defaultRecord": true,
@@ -39,8 +48,25 @@
       "allowKeys": [],
       "denyKeys": []
     },
-
-    "reminders": { "enabled": true, "horizonHours": 24, "graceHours": 12 },
-    "invalidate": { "enabled": true, "qqCommand": true }
+    "scoring": {
+      "mode": "shadow",
+      "gateMode": "strict",
+      "gateShadow": false,
+      "writeGate": true
+    },
+    "extract": {
+      "enabled": false,
+      "modelWrite": false
+    },
+    "episode": {
+      "summarize": true,
+      "maxPerDay": 24
+    },
+    "retrieval": {
+      "enabled": true
+    },
+    "wander": {
+      "enabled": false
+    }
   }
 }

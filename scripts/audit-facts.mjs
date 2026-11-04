@@ -2,7 +2,7 @@
 /**
  * 审计：原文日志里「本该抽出事实」的消息，是否真的进了长期事实库。
  *
- * 只读。用当前抽取器把窗口内的主人消息重放一遍（classify 纯函数，不写任何东西），
+ * 只读。用当前抽取器把窗口内的用户消息重放一遍（classify 纯函数，不写任何东西），
  * 再和 longterm.jsonl 里已有的事实比对，列出：
  *   - 重放能抽出候选、但库里没有对应事实的（漏记）
  *   - 库里多出来的（回填/手工，原文窗口外或已归档），正常
@@ -53,7 +53,7 @@ function readJsonlSafe(file) {
   }
 }
 
-// 1) 窗口内的主人原文（只 user 角色；assistant 不参与抽事实）
+// 1) 窗口内的用户原文（只 user 角色；assistant 不参与抽事实）
 const rawDir = path.join(DIR, 'raw', 'hot');
 const messages = [];
 const slug = KEY.replace(/[^a-z0-9]+/gi, '_');
@@ -136,7 +136,7 @@ if (AS_JSON) {
 } else {
   console.log(`数据目录   ${report.dir}`);
   console.log(`会话       ${report.key}    窗口 ${DAYS} 天    打分模式 ${report.scoringMode}`);
-  console.log(`主人消息   ${report.userMessages} 条（其中 ${report.messagesWithCandidates} 条现在能抽出候选）`);
+  console.log(`用户消息   ${report.userMessages} 条（其中 ${report.messagesWithCandidates} 条现在能抽出候选）`);
   console.log(`库中事实   ${report.factsInStore} 条`);
   if (!report.userMessages) {
     console.log('\n· 没有找到原文日志（检查 --dir / --key，或确认宿主确实在记原文）。');

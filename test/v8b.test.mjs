@@ -41,10 +41,10 @@ function factEvent(over = {}) {
 }
 
 test('classOf：六类判定', () => {
-  assert.equal(classOf('以后别叫我助手'), 'rule');
-  assert.equal(classOf('你是助手，不是助手'), 'persona');
+  assert.equal(classOf('以后别叫我小助手'), 'rule');
+  assert.equal(classOf('你是助手，不是小助手'), 'persona');
   assert.equal(classOf('昨天去了杭州西湖'), 'event');
-  assert.equal(classOf('我喜欢草莓味酸奶'), 'pref');
+  assert.equal(classOf('我喜欢百合味酸奶'), 'pref');
   assert.equal(classOf('记住买牛奶回家'), 'note');
   assert.equal(classOf('记住下周一交报告', { dueAt: true }), 'task');
   assert.equal(classOf('我生日是 9 月 5 日', { hard: true }), 'identity');
@@ -71,7 +71,7 @@ test('classify：规则类 / 备注类各自带 class', () => {
 
 test('materialize：保留 class，老行默认 note', () => {
   const dir = tmpDir();
-  lt.appendEvent(factEvent({ id: 'h-c1', class: 'rule', value: '以后不许叫我助手' }), dir);
+  lt.appendEvent(factEvent({ id: 'h-c1', class: 'rule', value: '以后不许叫我小助手' }), dir);
   const legacy = factEvent({ id: 'h-c2', sig: 'user:note:bbb' });
   delete legacy.class;
   lt.appendEvent(legacy, dir);
@@ -100,10 +100,10 @@ test('badHit：累计两次后检索降权（不删除）', () => {
 test('事实卡：event 类不进卡', () => {
   const facts = [
     factEvent({ id: 'h-e1', class: 'event', value: '昨天去了杭州西湖', tier: 'general' }),
-    factEvent({ id: 'h-e2', class: 'rule', value: '以后不许叫我助手', tier: 'general' })
+    factEvent({ id: 'h-e2', class: 'rule', value: '以后不许叫我小助手', tier: 'general' })
   ];
   const built = buildCard(facts, { maxChars: 800, hardReserveChars: 100, botMaxChars: 100 });
-  assert.ok(built.text.includes('助手'));
+  assert.ok(built.text.includes('小助手'));
   assert.ok(!built.text.includes('杭州'), '事件类不该出现在卡里');
 });
 

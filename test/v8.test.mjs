@@ -101,7 +101,7 @@ test('versioning 关闭（默认）：改口只加提及，旧值不变', () => 
   const dir = tmpDir();
   const ts = Date.now();
   recordInbound({ key: 'private:10001', text: '我生日是 9 月 5 日', ts, scoring: { mode: 'write' }, dir });
-  recordInbound({ key: 'private:10001', text: '我生日 11 月 2 日', ts: ts + 1000, scoring: { mode: 'write' }, dir });
+  recordInbound({ key: 'private:10001', text: '我生日 3 月 15 日', ts: ts + 1000, scoring: { mode: 'write' }, dir });
 
   const out = search({ query: '生日', dir, scoring: { mode: 'write' } });
   assert.equal(out.length, 1);
@@ -113,14 +113,14 @@ test('versioning 打开：改口写入 supersede，检索拿到新值 + 版本�
   const dir = tmpDir();
   const ts = Date.now();
   recordInbound({ key: 'private:10001', text: '我生日是 9 月 5 日', ts, scoring: { mode: 'write', versioning: true }, dir });
-  recordInbound({ key: 'private:10001', text: '我生日 11 月 2 日', ts: ts + 1000, scoring: { mode: 'write', versioning: true }, dir });
+  recordInbound({ key: 'private:10001', text: '我生日 3 月 15 日', ts: ts + 1000, scoring: { mode: 'write', versioning: true }, dir });
 
   const events = lt.readEvents(dir).rows;
   assert.ok(events.some((e) => e.ev === 'supersede'), '应当写入 supersede 事件');
 
   const out = search({ query: '生日', dir, scoring: { mode: 'write', versioning: true } });
   assert.equal(out.length, 1);
-  assert.equal(out[0].value.replace(/\s+/g, ''), '11月2日');
+  assert.equal(out[0].value.replace(/\s+/g, ''), '3月15日');
   assert.equal(out[0].versions, 2);
 });
 

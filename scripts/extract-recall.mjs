@@ -1,5 +1,5 @@
 // 回放真实消息，看规则抽取器到底能命中多少（抽取B 扩面前后的对比工具，只读）。
-// 用法：node scripts/extract-recall.mjs [--days 7] [--owner QQ] [--json] [--examples 8]
+// 用法：node scripts/extract-recall.mjs [--days 7] [--owner 10001] [--json] [--examples 8]
 //
 // 统计口径：
 //   候选率 = 至少产出一条候选的消息数 / 有文字的用户消息数

@@ -1,4 +1,4 @@
-﻿// 打分跑批 + 长期记忆落盘的集成测试（影子 / 写入 / 日终结算 / 检索）。
+// 打分跑批 + 长期记忆落盘的集成测试（影子 / 写入 / 日终结算 / 检索）。
 //
 // 隔离：QQ_MEMORY_DIR 指到临时目录，绝不碰生产数据目录。
 // 时间：全部显式传 ts / now，不依赖真实时钟。
@@ -37,16 +37,20 @@ test('classify：硬事实抽取、疑问不抽、记住→备注', () => {
   assert.equal(a.candidates.length, 1);
   assert.equal(a.candidates[0].tier, 'hard');
   assert.equal(a.candidates[0].about, 'user');
-  assert.equal(a.candidates[0].I, 1);
+  // A6：名字模式置信度 0.95 → I = 1 × (0.6+0.4×0.95) = 0.98
+  assert.equal(a.candidates[0].I, 0.98);
 
   const b = run.classify('你生日几号？');
   assert.equal(b.candidates.length, 0);
   assert.equal(b.signals.question, true);
 
+  // 抽取B：「记住我不吃香菜」现在是结构化偏好（explicitRemember 抬到 0.8），不再是备注
   const c = run.classify('记住我不吃香菜');
   assert.equal(c.candidates.length, 1);
   assert.equal(c.candidates[0].tier, 'general');
-  assert.equal(c.candidates[0].I, 0.8);
+  assert.equal(c.candidates[0].class, 'pref');
+  // A6：偏好置信度 0.65 → 0.8 × (0.6+0.4×0.65) = 0.69
+  assert.equal(c.candidates[0].I, 0.69);
 
   assert.equal(run.classify('今天天气不错').candidates.length, 0);
 });

@@ -20,7 +20,7 @@ const TIER_LABEL = { hard: '硬事实', long: '长期', general: '一般', temp:
 const server = new McpServer({ name: 'deepseek-memory', version: '0.1.0' });
 
 function formatItem(it) {
-  const who = it.role === 'assistant' ? `助手` : it.sender || '用户';
+  const who = it.role === 'assistant' ? `小助手` : it.sender || '用户';
   const text = String(it.text || '').replace(/\s+/g, ' ').slice(0, 600);
   return `[${it.date || it.ts}] ${who}：${text}`;
 }
@@ -28,11 +28,11 @@ function formatItem(it) {
 server.tool(
   'qq_memory_search',
   [
-    '检索 7 天记忆日志里的历史聊天原文（只查用户私聊；群聊不记录）。',
+    '检索历史聊天原文——不只 7 天：热窗口（默认 7 天）+ 全部归档都扫（只查用户私聊；群聊不记录）。',
     '什么时候用：聊到很久以前、想不起具体细节；需要确认「以前说过/答应过什么」；用户问「你还记得…」。',
     '用法：query 用 2~3 个不同关键词（空格分隔，任一命中即返回，命中越多排越前）；',
     'from/to 可省略（默认最近 8 个日文件，自动包含归档）；limit 默认 5，最多 20。',
-    '查到后引用时说明「查到以前的记录」；找不到就直说找不到，不要编造。'
+    '查到后引用时说明「查到以前的记录」；找不到就直说找不到，不要编造。你现在这句话、你自己说过的话，也在这份日志里。'
   ].join('\n'),
   {
     key: z.string().optional().describe('会话 key，默认 private:<用户QQ>；本工具只允许用户私聊'),
@@ -72,6 +72,7 @@ server.tool(
   [
     '在长期事实库里找「用户说过的事实/约定」（生日、喜好、答应过的事、我的设定等），按档位排序：硬事实 > 长期 > 一般 > 临时。',
     '什么时候用：要回答「我以前说过什么」「你记不记得我…」；回答关于用户偏好/约定/生日的问题之前。',
+    '每条事实若带「└ 我当时：…」就是**你当时的感受原话**，可以引用、不要改写；没带体感的会附「└ 原话：…」给你上下文。',
     '和 qq_memory_search 的分工：这个是**提炼过的事实**，那个是**聊天原文**。事实不够再翻原文。',
     'query 留空 = 按档位列最前面的几条；带 query = 只返回真命中（值/原文/标签/模式任一包含）。',
     '被作废的事实默认不返回；确有必要看墓碑时传 includeInvalidated=true。'
@@ -107,7 +108,11 @@ server.tool(
         const tier = TIER_LABEL[f.tier] || f.tier;
         const value = String(f.value || f.text || '').replace(/\s+/g, ' ').slice(0, 120);
         const label = f.label ? `${f.label}：` : '';
-        return `· [${tier} ${Math.round(Number(f.score) || 0)}] ${label}${value}`;
+        const src = f.src ? (f.src.kind === 'log' ? `原文 ${String(f.src.day || '').slice(5)}` : f.src.kind === 'card' ? '来自事实卡' : '来源未知') : '';
+  const head = `· [${tier} ${Math.round(Number(f.score) || 0)}] ${label}${value}` + (src ? ` ⟵ ${src}` : '');
+        if (f.feel) return `${head}\n  └ 我当时：${String(f.feel).slice(0, 40)}`;
+        const quote = String(f.quote || '').replace(/\s+/g, ' ').slice(0, 40);
+        return quote ? `${head}\n  └ 原话：${quote}` : head;
       }).join('\n');
       const header = `长期库「${query || '(全部)'}」命中 ${rows.length} 条（按档位/分数排序）：`;
       return { content: [{ type: 'text', text: `${header}\n${body}\n（这些是长期事实，引用时保持一致；和用户最新的话冲突时以最新的话为准。）` }] };

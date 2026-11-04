@@ -16,6 +16,7 @@ import { normalizeConfig as normalizeScoring, stabilityOf } from './score.mjs';
 import { classOf, subjectTag } from './facts.mjs';
 import { attrsOf, fragmentsOf, loadV10 } from './v10.mjs';
 import { normalizeNote } from './scoring-runner.mjs';
+import { appendCandidates, readCandidates } from './candidates.mjs';
 
 export const EXTRACT_DEFAULTS = {
   enabled: false,
@@ -25,14 +26,14 @@ export const EXTRACT_DEFAULTS = {
   maxFactsPerDay: 8,
   minConfidence: 0.6,
   timeoutMs: 30000,
-  promptVersion: 'a1',
+  promptVersion: 'a2',
   model: '',
   shadowFile: 'extract-shadow.jsonl',
   maxMessagesPerDay: 300,
   maxCharsPerBatch: 12000
 };
 
-const ATTR_KEYS = new Set(['birthday', 'name', 'nickname', 'residence', 'job', 'skill', 'pet']);
+const ATTR_KEYS = new Set(['birthday', 'name', 'nickname', 'residence', 'job', 'skill', 'pet', 'hobby', 'gear']);
 const ATTR_LABEL = {
   birthday: '生日',
   name: '名字',
@@ -40,9 +41,13 @@ const ATTR_LABEL = {
   residence: '住处',
   job: '工作',
   skill: '在学',
-  pet: '宠物'
+  pet: '宠物',
+  hobby: '爱好',
+  gear: '器材'
 };
-const TOPIC_ATTR_RE = /^user:(birthday|name|nickname|residence|job|skill|pet)$/;
+// 爱好/器材可以有多件：按「值」再加一层键，避免第二台相机把第一台覆盖掉
+const MULTI_VALUE_ATTRS = new Set(['hobby', 'gear']);
+const TOPIC_ATTR_RE = /^user:(birthday|name|nickname|residence|job|skill|pet|hobby|gear)$/;
 const TOPIC_PREF_RE = /^user:pref:.{1,16}$/;
 const TOPIC_NOTE_RE = /^user:note$/;
 const TOPIC_EVENT_RE = /^user:event$/;
@@ -56,6 +61,47 @@ const REL_SUBJECTS = new Set(['我妈', '我爸', '我家', '室友', '朋友', 
 // value 开头的动词/代词/连词：命中就拒（中文没有分词器，只拦开头）。
 const BAD_VALUE_START = /^(是|有|在|要|会|想|去|来|吃|喝|玩|看|买|用|打|做|养|学|住|工作|上班|上课|交|考|参加|喜欢|爱|讨厌|觉得|认为|感觉|记住|提醒|说|讲|问|告诉|答应|决定|计划|准备|我|你|他|她|它|这|那|就|才|还|也|都|的|了)/;
 const BAD_VALUE_BODY = /[。！？!?…，,；;：:]/;
+/** 纯版本/档位词：记下来没有任何信息量（影子报告里出现过「顶级版」）。 */
+const JUNK_VALUE = /^(顶级|顶配|标准|高配|豪华|旗舰|入门|基础|普通|最新|高级|低配|中配|满配)(版|款|配)?$/;
+
+// ── v2 语义门（v11 宽进归并：影子复查中精确率 37.5%，四类错因各配一道门）──
+// 这些门只看原文，不做推断；宁可漏，不可错——错一条会被复习机制反复强化。
+const SELF_REF = /(我|咱|俺|本人|用户)/;
+/** 版本名/资料片/地图/单件型号：不是稳定的偏好大类。 */
+const EDITION_VALUE = /(顶级版|豪华版|标准版|年度版|旗舰版|终极版|系列|版本|资料片|地图|DLC|原厂|改装)/i;
+const PREF_VERB = /(喜欢|爱|讨厌|不爱|不吃|受不了|最爱|迷上|上瘾)/;
+const GREETING_QUOTE = /(生日快乐|祝你|你好|早安|晚安|谢谢|辛苦|恭喜)/;
+const FUTURE_QUOTE = /(要|会|打算|准备|计划|想去|想买|明天|下周|周末|以后|将来|下次)/;
+const PAST_QUOTE = /(了|过|已经|昨天|上周|刚才|之前)/;
+
+/**
+ * 语义门：validateCandidate 的硬门之后、返回候选之前。
+ * 返回 '' 表示通过，否则返回原因码（与 validateCandidate 的 reason 同格式）。
+ */
+export function semanticGate(cand = {}) {
+  const kind = String(cand.kind || '');
+  const topic = String(cand.topic || '');
+  const value = String(cand.value || '');
+  const quote = String(cand.quote || '');
+  const attr = topic.match(TOPIC_ATTR_RE);
+
+  // 1) 称呼/祝福被当成用户属性（影子事故：「生日快乐，助手」→ user:name 助手）
+  if (kind === 'fact' && attr && attr[1] === 'name' && GREETING_QUOTE.test(quote)) return 'bot-name';
+
+  // 2) 属性类事实必须有本人自指的明确陈述
+  if (kind === 'fact' && attr && !SELF_REF.test(quote)) return 'attr-evidence';
+
+  // 3) 偏好必须有偏好动词；4) 偏好对象不能是版本/系列/单件
+  if (kind === 'pref') {
+    if (!PREF_VERB.test(quote)) return 'pref-verb';
+    if (EDITION_VALUE.test(value)) return 'edition';
+  }
+
+  // 5) 事件只记已发生；未来计划先放掉（要做的事交给 task）
+  if (kind === 'event' && FUTURE_QUOTE.test(quote) && !PAST_QUOTE.test(quote)) return 'event-future';
+
+  return '';
+}
 
 // ── 配置 ────────────────────────────────────────────────────────────────
 
@@ -156,11 +202,25 @@ const SYSTEM_PROMPT = [
   '',
   'topic 白名单：',
   '  user:birthday | user:name | user:nickname | user:residence | user:job | user:skill | user:pet',
-  '  user:pref:<对象> | user:note | user:event | user:task:<YYYY-MM-DD>',
+  '  user:hobby | user:gear | user:pref:<对象> | user:note | user:event | user:task:<YYYY-MM-DD>',
+  '',
+  '分类口径（重要）：',
+  '- user:skill = 正在学的新技能（「在学吉他」）；不要用它记爱好。',
+  '- user:hobby = 长期爱好、平时常做的事（摄影 / 骑车 / 摄影器材玩得深也算）→ value 就写爱好名（2–10 字，如「摄影」）。',
+  '- user:gear = 自己拥有的器材/装备（相机、镜头、车、乐器）→ value 写名称（可到 24 字，如「Z8X 相机和 2875ZA 镜头」）。',
+  '- user:pet 只放宠物（猫狗鸟…），不要把器材写进 pet。',
+  '- 拿不准是爱好还是偏好时，优先用 user:hobby。',
+  '',
+  '严格边界（写错比漏记更糟）：',
+  '- 属性类 fact（name/nickname/birthday/residence/job/skill/pet/hobby/gear）必须是用户本人对「自己」的明确陈述，quote 里要有「我 / 咱 / 俺 / 本人 / 用户」；问候、祝福、称呼别人（如「生日快乐，某名字」）不算。',
+  '- kind=pref 必须在原文里有明确偏好动词（喜欢 / 爱 / 讨厌 / 不爱 / 不吃 / 受不了 / 最爱 / 迷上 / 上瘾）；只是「拥有/在用」的东西写 user:gear 或 user:hobby，不要写 pref。',
+  '- pref 的 value 是稳定的偏好大类（火锅、游戏、摄影），不要写版本名/资料片/地图/单件型号（「顶级版」「极速谷6」「英国地图」「原厂示例车厂」都不算）。',
+  '- kind=event 只记已经发生的事；「要/打算/准备/计划/想去/想买/明天/下周/周末/以后」这类未来安排不要记 event（要做的事走 task）。',
+  '- 一条消息最多 1 条候选；同一兴趣不要拆成多条。',
   '',
   '示例：',
-  '[{"kind":"fact","about":"user","subject":"我","topic":"user:birthday","value":"11月2日","quote":"我生日是11月2号","confidence":0.93},',
-  ' {"kind":"task","about":"user","subject":"我","topic":"user:task:2026-11-09","value":"周报","quote":"下下个星期一要交周报","confidence":0.9,"due":"2026-11-09"}]'
+  '[{"kind":"fact","about":"user","subject":"我","topic":"user:birthday","value":"3月15日","quote":"我生日是11月2号","confidence":0.93},',
+  ' {"kind":"task","about":"user","subject":"我","topic":"user:task:2026-11-09","value":"物理实验报告","quote":"下下个星期一要交物理实验报告","confidence":0.9,"due":"2026-11-09"}]'
 ].join('\n');
 
 export function buildPrompt(messages = []) {
@@ -252,6 +312,8 @@ export function validateCandidate(raw, ctx = {}) {
   if (value.length < 2 || value.length > 20) return reject('value');
   if (value === quote) return reject('value');
   if (BAD_VALUE_START.test(value) || BAD_VALUE_BODY.test(value)) return reject('value');
+  // 值太碎：纯版本/档位词（「顶级版」「标准版」），记了也用不上
+  if (JUNK_VALUE.test(value)) return reject('junk');
 
   const attrMatch = topic.match(TOPIC_ATTR_RE);
   const isPref = TOPIC_PREF_RE.test(topic);
@@ -271,7 +333,9 @@ export function validateCandidate(raw, ctx = {}) {
   if (attrMatch) {
     const key = attrMatch[1];
     if (key === 'birthday' && !/(\d{1,2})\s*[月/-]\s*(\d{1,2})|(\d{4})\s*[-/年]/.test(value)) return reject('attr');
-    if (key !== 'birthday' && value.length > 12) return reject('attr');
+    // 爱好短值合法（摄影 / 骑摩托），器材名会长一些（Z8X 相机和 2875ZA 镜头）
+    const limit = key === 'birthday' ? 24 : key === 'gear' ? 24 : key === 'hobby' ? 10 : 12;
+    if (key !== 'birthday' && value.length > limit) return reject('attr');
   }
 
   if (isTask) {
@@ -282,9 +346,13 @@ export function validateCandidate(raw, ctx = {}) {
 
   if (confidence < Number(cfg.minConfidence ?? EXTRACT_DEFAULTS.minConfidence)) return reject('confidence');
 
-  const cls = kind === 'fact' ? classOf(quote, { dueAt: false }) : kind === 'task' ? 'task' : kind === 'pref' ? 'pref' : kind === 'event' ? 'event' : 'note';
+  // 属性类事实的 quote 往往是「这是我的相机」这种，按 note 判会误伤短值；统一按 pref 的口径过门
+  const cls = attrMatch ? 'pref' : kind === 'fact' ? classOf(quote, { dueAt: false }) : kind === 'task' ? 'task' : kind === 'pref' ? 'pref' : kind === 'event' ? 'event' : 'note';
   const gate = writeGate(quote, { about, class: cls, value, text: quote, pattern: kind, label: kind }, { cfg: normalizeScoring(scoring || {}) });
   if (!gate.ok) return reject(`gate:${gate.reason}`);
+
+  const sem = semanticGate({ kind, topic, value, quote });
+  if (sem) return reject(sem);
 
   const cand = {
     kind,
@@ -335,7 +403,8 @@ export function candidateToEvent(cand, { now = Date.now(), cfg = EXTRACT_DEFAULT
     pattern = attr[1];
     label = ATTR_LABEL[pattern] || pattern;
     const tag = subjectTag(cand.subject);
-    sig = tag ? `${about}:${tag}:${pattern}` : `${about}:${pattern}`;
+    const base = tag ? `${about}:${tag}:${pattern}` : `${about}:${pattern}`;
+    sig = MULTI_VALUE_ATTRS.has(pattern) ? `${base}:${shortHash(cand.value)}` : base;
   } else if (cand.kind === 'pref') {
     pattern = 'pref';
     label = '偏好';
@@ -354,10 +423,10 @@ export function candidateToEvent(cand, { now = Date.now(), cfg = EXTRACT_DEFAULT
     sig = `user:note:${shortHash(normalizeNote(cand.value))}`;
   }
 
-  const tier = attr ? 'hard' : 'general';
+  const tier = attr ? (MULTI_VALUE_ATTRS.has(pattern) ? 'long' : 'hard') : 'general';
   const sCfg = normalizeScoring({});
   const s = stabilityOf({ tier, class: cand.class }, sCfg);
-  const I = attr ? 1 : cand.kind === 'task' ? 0.9 : cand.kind === 'pref' ? 0.7 : cand.kind === 'event' ? 0.7 : 0.8;
+  const I = attr ? (MULTI_VALUE_ATTRS.has(pattern) ? 0.85 : 1) : cand.kind === 'task' ? 0.9 : cand.kind === 'pref' ? 0.7 : cand.kind === 'event' ? 0.7 : 0.8;
   const dueAt = cand.due ? new Date(`${cand.due}T09:00:00`).getTime() : 0;
 
   const row = {
@@ -373,13 +442,15 @@ export function candidateToEvent(cand, { now = Date.now(), cfg = EXTRACT_DEFAULT
     quote: cand.quote.slice(0, 200),
     topic: cand.topic,
     class: cand.class,
-    source: { model: 'extract', promptVersion: cfg.promptVersion || 'a1', confidence: cand.confidence },
+    source: { model: 'extract', promptVersion: cfg.promptVersion || 'a2', confidence: cand.confidence },
     tier,
     I,
     s: Number.isFinite(s) ? Math.round(s * 100) / 100 : null,
     hits: 1,
     lastAt: now,
     at: now,
+    // 事件有时效：默认 7 天，到点由 settle 标 expire（score.tierAfter 读 ttlDays）
+    ...(cand.kind === 'event' ? { ttlDays: Number(cfg.eventTtlDays) || 7 } : {}),
     ...(cand.due ? { task: true, due: cand.due, dueAt, duePhrase: cand.quote.slice(0, 40) } : {})
   };
 
@@ -514,7 +585,7 @@ export async function runModelExtract({
 } = {}) {
   const startedAt = Date.now();
   const c = normalizeExtract(cfg);
-  const empty = { skipped: 'disabled', batches: 0, messages: 0, candidates: 0, passed: 0, dropped: 0, written: 0, byReason: {}, ms: 0 };
+  const empty = { skipped: 'disabled', batches: 0, messages: 0, candidates: 0, passed: 0, dropped: 0, written: 0, pooled: 0, byReason: {}, ms: 0 };
   if (!c.enabled) return empty;
   if (!ownerKey) return { ...empty, skipped: 'no-owner' };
 
@@ -538,6 +609,15 @@ export async function runModelExtract({
   } catch {
     existing = [];
   }
+  // 候选池里还没归并的也算「已有」：同一件事不必每天重新提一次
+  try {
+    for (const row of readCandidates(dir).rows) {
+      if ((row.status || 'pending') !== 'pending') continue;
+      existing.push({ topic: row.topic, value: row.value, class: row.class || 'note' });
+    }
+  } catch {
+    /* 池子坏掉不影响抽取 */
+  }
   const v10cfg = (() => {
     try {
       return loadV10(dir);
@@ -546,7 +626,7 @@ export async function runModelExtract({
     }
   })();
 
-  const stats = { ...empty, skipped: '', messages: messages.length, batches: 0, candidates: 0, passed: 0, dropped: 0, written: 0, byReason: {}, ms: 0 };
+  const stats = { ...empty, skipped: '', messages: messages.length, batches: 0, candidates: 0, passed: 0, dropped: 0, written: 0, pooled: 0, byReason: {}, ms: 0 };
   const shadowRows = [];
   const passed = [];
   const seen = new Map();
@@ -558,6 +638,7 @@ export async function runModelExtract({
     let res;
     try {
       res = await callModel({
+        caller: 'extract',
         system: prompt.system,
         userContent: prompt.userContent,
         maxChars: 4000,
@@ -638,17 +719,25 @@ export async function runModelExtract({
   stats.passed = capped.length;
   stats.dropped = stats.candidates - stats.passed;
 
-  if (c.modelWrite) {
-    for (const cand of capped) {
-      try {
-        const row = candidateToEvent(cand, { now, cfg: c, v10cfg });
-        lt.appendEvent(row, dir);
-        stats.written += 1;
-        shadowRows.push({ t: 'write', at: now, day, id: row.id, sig: row.sig, value: row.value, tier: row.tier });
-      } catch (error) {
-        stats.byReason.write = (stats.byReason.write || 0) + 1;
-        log(`记忆抽取：写入失败（${error?.message ?? error}）`);
-      }
+  // v11：抽取结果只进候选池，不直接写事实库。
+  // 事实库的唯一入口是日终 merge 阶段（合并/升级/否决之后才写 fact），
+  // 这样一条 37.5% 精确率的模型候选不会污染卡片和检索。
+  if (capped.length) {
+    try {
+      const rows = capped.map((cand) => ({
+        ...cand,
+        status: 'pending',
+        sourceKind: 'model',
+        source: { model: 'extract', promptVersion: c.promptVersion, confidence: cand.confidence },
+        day,
+        at: now
+      }));
+      appendCandidates(rows, dir);
+      stats.pooled = rows.length;
+      for (const row of rows) shadowRows.push({ t: 'pool', at: now, day, topic: row.topic, value: row.value, confidence: row.confidence, kind: row.kind });
+    } catch (error) {
+      stats.byReason.pool = (stats.byReason.pool || 0) + 1;
+      log(`记忆抽取：写候选池失败（${error?.message ?? error}）`);
     }
   }
 

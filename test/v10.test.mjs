@@ -44,13 +44,13 @@ test('v10：配置默认关闭，只认认识的键，非法数值回落', () =>
   const c = v10.normalizeV10({
     enabled: true,
     emit: true,
-    qLabels: { mid: '大概记得' },
+    qLabels: { mid: '我记得个大概' },
     thresholds: { high: 0.8 },
     emotionHalfLife: -5,
     quiet: 1
   });
   assert.equal(c.enabled, true);
-  assert.equal(c.qLabels.mid, '大概记得');
+  assert.equal(c.qLabels.mid, '我记得个大概');
   assert.equal(c.qLabels.low, '只记得片段');
   assert.equal(c.thresholds.high, 0.8);
   assert.equal(c.emotionHalfLife, 180);
@@ -60,15 +60,15 @@ test('v10：配置默认关闭，只认认识的键，非法数值回落', () =>
 test('v10：loadV10 从数据目录读 v10.json，缺文件回默认', (t) => {
   const dir = tmp(t);
   assert.equal(v10.loadV10(dir).enabled, false);
-  writeV10(dir, { enabled: true, qLabels: { low: '只记得片段' } });
+  writeV10(dir, { enabled: true, qLabels: { low: '唔……我就剩点零碎印象了' } });
   const c = v10.loadV10(dir);
   assert.equal(c.enabled, true);
-  assert.equal(c.qLabels.low, '只记得片段');
+  assert.equal(c.qLabels.low, '唔……我就剩点零碎印象了');
 });
 
 // ── 2. 属性 ────────────────────────────────────────────────────────────────
 test('v10：attrsOf 抽情绪/关系/场景（带强度词与场景词）', () => {
-  const sad = v10.attrsOf('室友今天特别难过，一个人在家里哭了很久');
+  const sad = v10.attrsOf('用户今天特别难过，一个人在家里哭了很久');
   assert.ok(sad.emo < 0, '负情绪应为负值');
   assert.ok(Math.abs(sad.emo) > 0.3);
   assert.equal(sad.rel, 1);
@@ -136,7 +136,7 @@ test('v10：激活值 hard 有保底，线索命中加分，干扰同主题扣�
 
 // ── 4. 可信度与渲染 ───────────────────────────────────────────────────────
 test('v10：Q 由证据多少决定，三档可配措辞', () => {
-  const cfg = v10.normalizeV10({ qLabels: { mid: '大概记得', low: '只记得片段' } });
+  const cfg = v10.normalizeV10({ qLabels: { mid: '我记得个大概', low: '唔……我就剩点零碎印象了' } });
   const strong = { id: 'a', tier: 'long', quote: '用户下周一要交物理实验报告', source: { id: 1 }, manual: true, topic: 'user:report', hits: 2 };
   const qa = v10.qValueOf(strong, { facts: [strong] });
   assert.equal(v10.qLevelOf(qa, cfg), 'high');
@@ -147,7 +147,7 @@ test('v10：Q 由证据多少决定，三档可配措辞', () => {
 });
 
 test('v10：渲染按 D 决定说多细，Q 只加前缀（细节完好时不说"只记得片段"）', () => {
-  const cfg = v10.normalizeV10({ qLabels: { mid: '大概记得', low: '只记得片段' } });
+  const cfg = v10.normalizeV10({ qLabels: { mid: '我记得个大概', low: '唔……我就剩点零碎印象了' } });
   // B：今天刚说、细节完好，但没有 quote/source（老数据样式）→ 必须原文直说，不能加"只记得片段"
   const fresh = { tier: 'long', value: '用户爱吃鱼和莲藕排骨汤', text: '用户爱吃鱼和莲藕排骨汤', lastAt: NOW - DAY, hits: 1, class: 'note' };
   assert.equal(v10.renderFact(fresh, { cfg, now: NOW, facts: [fresh] }), '· [long] 用户爱吃鱼和莲藕排骨汤');
@@ -160,14 +160,14 @@ test('v10：渲染按 D 决定说多细，Q 只加前缀（细节完好时不说
     fragments: ['用户养了一条叫小鲸的鱼', '养了三年']
   };
   const oldLine = v10.renderFact(old, { cfg, now: NOW, facts: [old] });
-  assert.ok(oldLine.includes('只记得片段'), oldLine);
+  assert.ok(oldLine.includes('零碎印象'), oldLine);
   assert.ok(oldLine.includes('用户养了一条叫小鲸的鱼'), oldLine);
 
   // 中间态：D 0.3–0.6 → 原文 + 「细节记不全了」，Q 高不加前缀
-  const half = { tier: 'long', class: 'note', lastAt: NOW - 30 * DAY, hits: 1, manual: true, value: '用户下个月要去外地出差', text: '用户下个月要去外地出差', quote: '用户下个月要去外地出差', source: { id: 2 } };
+  const half = { tier: 'long', class: 'note', lastAt: NOW - 30 * DAY, hits: 1, manual: true, value: '用户下个月要去兰州出差', text: '用户下个月要去兰州出差', quote: '用户下个月要去兰州出差', source: { id: 2 } };
   const midLine = v10.renderFact(half, { cfg, now: NOW, facts: [half] });
   assert.ok(midLine.includes('细节记不全了'), midLine);
-  assert.equal(midLine.includes('比较确定'), false, 'Q 高时不加前缀');
+  assert.equal(midLine.includes('我记得'), false, 'Q 高时不加前缀');
 });
 
 // ── 5. 检索集成：关闭不加字段，开启加解释并按需记账 ──────────────────────
@@ -232,7 +232,7 @@ test('v10：只有调用方显式 opt-in 且只记返回的条数（CLI 查看�
 });
 
 // v10.2：retrieved 事件带上这次命中里的 cue 分值，便于回看「为什么想起」
-test('v10.2：retrieved 事件记录 cue（场景/时段/情绪线索），关闭时不记账', (t) => {
+test('v10.2：retrieved 事件记录 cue（场景/时段/情绪线索），没有激活值时记 0', (t) => {
   const dir = tmp(t);
   writeV10(dir, { enabled: true, recordRetrieved: true });
   lt.appendEvent(
@@ -246,12 +246,12 @@ test('v10.2：retrieved 事件记录 cue（场景/时段/情绪线索），关�
   );
   // 命中场景（家里）+ 时段（周末）+ 情绪（难过）：cue 至少 6+4+4
   search({ query: '周末在家里有点难过', limit: 2, scoring: { mode: 'write' }, dir, now: NOW, recordRetrieved: true, recordBy: 'inject' });
-  const ev = lt.readEvents(dir).rows.find((r) => r.ev === 'retrieved');
+  let ev = lt.readEvents(dir).rows.find((r) => r.ev === 'retrieved');
   assert.ok(ev, '应写一条 retrieved');
   assert.equal(typeof ev.cue, 'number');
   assert.ok(ev.cue >= 14, 'cue 应包含场景/时段/情绪线索，实际 ' + ev.cue);
 
-  // 关闭 v10 时根本不记账（与旧行为一致）
+  // 关闭 v10 时根本不记账（与旧行为一致），不会写没有 cue 的事件
   const dirOff = tmp(t);
   writeV10(dirOff, { enabled: false });
   lt.appendEvent(
@@ -310,8 +310,8 @@ test('v10.1：explainFact 复用 v10.explain，并标出低于注入阈值', (t)
   assert.ok(ex.activation < 30);
 });
 
-// ── 9. 情绪残留 → 语气提示（P2 阶段 C） ─────────────────────────────
-test('v10.3：toneResidue 关闭不提示；强情绪 + 细节模糊 + 近期提过才提示', () => {
+// ── 8. 情绪残留 → 语气提示（P2 阶段 C） ─────────────────────────────
+test('v10.3：toneResidue 关闭不提示；强情绪 + 细节模糊 + 近 7 天提过才提示', () => {
   const now = NOW;
   const faint = {
     id: 't-1', topic: 'user:搬家', label: '搬家', tier: 'general', class: 'event',
@@ -328,17 +328,20 @@ test('v10.3：toneResidue 关闭不提示；强情绪 + 细节模糊 + 近期提
   assert.ok(hint.text.startsWith('〔语气提示〕'));
   assert.ok(hint.text.length <= on.tone.maxChars, `超长：${hint.text.length}`);
 
+  // 细节还清楚（今天刚聊过）不提示
   const fresh = { ...faint, id: 't-2', lastAt: now };
-  assert.equal(v10.toneHintOf([fresh], { query: '搬家', cfg: on, now }), null, '细节清楚时不提示');
+  assert.equal(v10.toneHintOf([fresh], { query: '搬家', cfg: on, now }), null);
 
+  // 情绪不够强不提示
   const mild = { ...faint, id: 't-3', emo: -0.2 };
-  assert.equal(v10.toneHintOf([mild], { query: '搬家', cfg: on, now }), null, '情绪不强时不提示');
+  assert.equal(v10.toneHintOf([mild], { query: '搬家', cfg: on, now }), null);
 
-  assert.equal(v10.toneHintOf([faint], { query: '今天吃什么', cfg: on, now }), null, '没提到也不在窗口内，不翻旧账');
+  // 当前没提到、也不在 7 天窗口内 → 不翻旧账
+  assert.equal(v10.toneHintOf([faint], { query: '今天吃什么', cfg: on, now }), null);
 
   // 高兴的强情绪不该被说成「气氛偏低」
   const happy = { ...faint, id: 't-4', emo: 0.8 };
-  assert.equal(v10.toneHintOf([happy], { query: '搬家', cfg: on, now }), null, '正面情绪不提示');
+  assert.equal(v10.toneHintOf([happy], { query: '搬家', cfg: on, now }), null);
 });
 
 test('v10.3：同一 topic 在冷却窗口内只提示一次，过了冷却可以再提示', () => {
@@ -355,7 +358,7 @@ test('v10.3：同一 topic 在冷却窗口内只提示一次，过了冷却可�
   assert.ok(v10.toneHintOf([faint], { query: '搬家', cfg, now, lastToneAt: earlier }), '25 小时后可再提示');
 });
 
-test('v10.3：tone 事件不被 materialize 当成事实', (t) => {
+test('v10.3：tone 事件不被 materialize 当成事实，也不影响事实数', (t) => {
   const dir = tmp(t);
   lt.appendEvent({ ev: 'fact', id: 'f-1', sig: 'user:搬家', topic: 'user:搬家', value: '搬家那几天有点难过', text: '搬家那几天有点难过', tier: 'general', class: 'event', I: 0.6, s: 3, hits: 1, lastAt: NOW - 60 * DAY, at: NOW - 60 * DAY, emo: -0.8 }, dir);
   lt.appendEvent({ ev: 'tone', topic: 'user:搬家', at: NOW, by: 'inject' }, dir);
@@ -441,7 +444,7 @@ test('v10.5：tokens 模式能让整句检索到事实，substring 模式不能'
   const dir = tmp(t);
   const facts = [
     { id: 'f1', tier: 'hard', class: 'note', status: 'active', value: '用户爱吃鱼和莲藕排骨汤', text: '用户爱吃鱼和莲藕排骨汤', sig: 'user:food', topic: 'user:food', I: 1, lastAt: NOW, hits: 1 },
-    { id: 'f2', tier: 'general', class: 'note', status: 'active', value: '用户下周一要交周报', text: '用户下周一要交周报', sig: 'user:report', topic: 'user:report', I: 0.7, lastAt: NOW, hits: 1 }
+    { id: 'f2', tier: 'general', class: 'note', status: 'active', value: '用户下周一要交实验报告', text: '用户下周一要交实验报告', sig: 'user:report', topic: 'user:report', I: 0.7, lastAt: NOW, hits: 1 }
   ];
   const q = '今天回家路上突然想吃鱼';
   assert.equal(search({ query: q, facts, dir, scoring: { mode: 'write' }, limit: 5, now: NOW }).length, 0, 'substring 模式匹配不到整句');

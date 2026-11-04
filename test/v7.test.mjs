@@ -198,8 +198,8 @@ test('card：hard 永不丢，超预算先丢低分 long', () => {
 
 test('card：我的事单独限额', () => {
   const facts = [
-    factEvent({ id: 'b1', about: 'bot', tier: 'hard', pattern: 'birthday', label: '我的生日', value: '11 月 2 日', text: '助手 11 月 2 日生日' }),
-    factEvent({ id: 'b2', about: 'bot', tier: 'hard', pattern: 'name', label: '我的名字', value: '助手', text: '助手正式名助手' })
+    factEvent({ id: 'b1', about: 'bot', tier: 'hard', pattern: 'birthday', label: '我的生日', value: '3 月 15 日', text: '小助手 3 月 15 日生日' }),
+    factEvent({ id: 'b2', about: 'bot', tier: 'hard', pattern: 'name', label: '我的名字', value: '助手', text: '小助手正式名助手' })
   ];
   const built = card.buildCard(facts, { maxChars: 1500, botMaxChars: 12 });
   assert.ok(built.text.includes('【我的事】'));
@@ -265,7 +265,7 @@ test('engine：write 模式日终用长期库投影事实卡并留备份', async
   const { dir, engine } = sandbox(t, { scoring: { mode: 'write' }, profile: { enabled: true, source: 'projection' } });
   store.writeProfile('旧的模型摘要');
   appendEvent(factEvent({ id: 'h-a1', tier: 'hard', text: '用户 9 月 5 日生日', value: '9 月 5 日' }));
-  appendEvent(factEvent({ id: 'h-a2', tier: 'long', I: 0.8, pattern: 'food', label: '爱吃', value: '草莓味酸奶', text: '用户爱喝酸奶' }));
+  appendEvent(factEvent({ id: 'h-a2', tier: 'long', I: 0.8, pattern: 'food', label: '爱吃', value: '百合味酸奶', text: '用户爱喝百合味酸奶' }));
   const e = engine();
   const result = await e.runDailyMaintenance(Date.now(), { force: true });
   assert.equal(result.ok, true);
@@ -273,7 +273,7 @@ test('engine：write 模式日终用长期库投影事实卡并留备份', async
   const text = fs.readFileSync(card.cardFile(dir), 'utf8');
   assert.ok(text.includes('【长期记忆（事实卡）】'));
   assert.ok(text.includes('9 月 5 日'));
-  assert.ok(text.includes('草莓味酸奶'));
+  assert.ok(text.includes('百合味酸奶'));
   assert.ok(card.listBackups(dir).length >= 1);
   assert.equal(result.profile.dropped, 0);
 });
@@ -282,7 +282,7 @@ test('engine：卡更新后给老会话再注入一次，且只一次', async (t
   const { engine } = sandbox(t, { profile: { enabled: true, reinjectAfterAgeMs: 3 * DAY, reinjectGapMs: 3 * DAY } });
   const sid = 's-reinject';
   store.noteSession(KEY, sid, Date.now() - 5 * DAY);
-  store.writeProfile('- 用户喜欢火锅');
+  store.writeProfile('- 用户喜欢擂饭');
   const e = engine();
 
   const first = e.composePrompt(KEY, sid, '在吗');
@@ -291,10 +291,10 @@ test('engine：卡更新后给老会话再注入一次，且只一次', async (t
   assert.equal(store.profileInjectedFor(sid), true);
 
   // 卡更新（写文件会让 store 清掉注入标记）→ 下一句应该重新带卡
-  store.writeProfile('- 用户喜欢火锅\n- 用户爱喝草莓味酸奶');
+  store.writeProfile('- 用户喜欢擂饭\n- 用户爱喝百合味酸奶');
   const second = e.composePrompt(KEY, sid, '再说一遍');
   assert.equal(second.profile, true);
-  assert.match(second.text, /草莓味酸奶/);
+  assert.match(second.text, /百合味酸奶/);
   e.commitInjections(KEY, sid, second);
 
   const third = e.composePrompt(KEY, sid, '还有吗');
@@ -319,7 +319,7 @@ test('engine：旋转状态与 doctor 报告可读', async (t) => {
 
 // ---- 抽取防御：真实语料回放（2026-10-29，6 天 171 条 user 消息）里的误判形态 ----
 test('facts：假设/商量句不抽事实', () => {
-  const a = classify('我在想要不要直接把你的名字助手写进人设卡，你人设卡里目前的名字还是助手', CFG);
+  const a = classify('我在想要不要直接把你的名字助手写进人设卡，你人设卡里目前的名字还是小助手', CFG);
   assert.equal(a.candidates.length, 0, '「要不要…写进人设卡」不是事实');
   const b = classify('如果我的生日是 9 月 5 日', CFG);
   assert.equal(b.candidates.length, 0, '「如果…」是假设');
@@ -332,6 +332,6 @@ test('facts：陈述句照旧抽，称谓语气词会去掉', () => {
   const bot = classify('你的名字是助手', CFG);
   assert.equal(bot.candidates[0].sig, 'bot:名字');
   assert.equal(bot.candidates[0].value, '助手');
-  const nick = classify('以后叫我助手吧', CFG);
-  assert.equal(nick.candidates[0].value, '助手');
+  const nick = classify('以后叫我小助手吧', CFG);
+  assert.equal(nick.candidates[0].value, '小助手');
 });

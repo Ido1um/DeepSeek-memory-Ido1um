@@ -13,22 +13,23 @@ import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
+import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { describe, normalizeConfig as normalizeScoring } from '../src/score.mjs';
-import { resolveDataDir, DEFAULT_DATA_DIR } from '../src/paths.mjs';
 import * as longterm from '../src/longterm.mjs';
 import * as cardMod from '../src/card.mjs';
 import * as v10 from '../src/v10.mjs';
 import * as extractModel from '../src/extract-model.mjs';
+import * as topicsMod from '../src/topics.mjs';
+import { auditPresets } from '../src/preset-audit.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const PUBLIC = path.join(HERE, 'public');
-// 测试/多实例时可用 WORKBENCH_DESIRED 指向临时目标配置
+// 测试/多实例时可用 WORKBENCH_DESIRED 指向临时目标配置，避免写生产 workbench/config.json
 const DESIRED_FILE = process.env.WORKBENCH_DESIRED || path.join(HERE, 'config.json');
-// 可选：想看「线上配置」时，把宿主 config.json 的路径塞进 env；没有就只看本地
 const BRIDGE_CFG = process.env.WORKBENCH_BRIDGE_CFG || '';
 const BRIDGE_LOG = process.env.WORKBENCH_BRIDGE_LOG || '';
-const DEFAULT_DATA = DEFAULT_DATA_DIR;
+const DEFAULT_DATA = path.join(os.homedir(), '.deepseek-memory', 'data');
 // 写操作一律要令牌：优先环境变量，其次 workbench/.workbench-token（首次自动生成）；
 // 只有显式 --no-token 才关闭（只用于本地调试，启动日志会警告）。
 const TOKEN_FILE = path.join(HERE, '.workbench-token');
@@ -47,7 +48,6 @@ function loadToken() {
   return made;
 }
 const WORKBENCH_TOKEN = NO_TOKEN ? '' : loadToken();
-const dataDirOf = (memDir = '') => resolveDataDir({ explicit: memDir });
 
 const PORT_ARG = process.argv.indexOf('--port');
 let PORT = PORT_ARG > 0 ? Number(process.argv[PORT_ARG + 1]) : 7351;
@@ -166,7 +166,7 @@ function probeDir(input) {
   const dir = normDir(input);
   const out = { dir, valid: isAbsWinPath(dir), exists: false, writable: false, looksLikeMemory: false, sizeMB: 0, entries: {}, error: null };
   if (!dir) { out.error = '路径为空'; return out; }
-  if (!out.valid) { out.error = '需要绝对路径，例如 '; return out; }
+  if (!out.valid) { out.error = '需要绝对路径，例如 ~/.deepseek-memory/data'; return out; }
   try { out.exists = fs.statSync(dir).isDirectory(); }
   catch (e) { if (e.code !== 'ENOENT') out.error = e.message; }
   if (!out.exists) return out;
@@ -210,7 +210,7 @@ function consoleUrl() {
 
 function sessionTokens(sid, key) {
   if (!sid && !key) return { latest: 0, max5: 0, rounds: 0, stale: false, tokensSid: '' };
-  const dir = dataDirOf(loadBridgeMemory().mem?.dir || '');
+  const dir = (loadBridgeMemory().mem.dir || DEFAULT_DATA);
   const tail = tailBytes(path.join(dir, 'logs', 'token-usage.jsonl'), 600_000);
   const own = [];
   const byKey = [];        // 同一个 key 的 turn 行（映射失效时兜底）
@@ -268,8 +268,8 @@ function buildGraph(facts, { maxFacts = 240 } = {}) {
   // 认不出再退回 pattern/class。这里只影响图上怎么归类，不写库、不改档。
   const TOPIC_RULES = [
     ['生日', /生日|寿|蛋糕/],
-    ['名字/称呼', /名字|称呼|小名|叫我|自称|助手|昵称/],
-    ['住处', /住|宿舍|老家|搬/],
+    ['名字/称呼', /名字|称呼|小名|叫我|自称|我|昵称/],
+    ['住处', /住|示例省份|兰州|宿舍|老家|搬/],
     ['学业/工作', /高考|大学|专业|学院|课|实验|论文|考试|报告|工作|上班|实习/],
     ['喜好', /喜欢|爱|讨厌|不吃|爱吃|受不了|怕|习惯|酸奶|鱼|橘子/],
     ['约定/规则', /答应|约定|不许|必须|只能|以后|别再|不能|规矩/],
@@ -311,7 +311,7 @@ function buildGraph(facts, { maxFacts = 240 } = {}) {
 
 function buildState() {
   const { mem } = loadBridgeMemory();
-  const dataDir = dataDirOf(mem && mem.dir ? mem.dir : '');
+  const dataDir = mem.dir || DEFAULT_DATA;
   const desired = loadDesired();
   const mstate = readJson(path.join(dataDir, 'state', 'memory.json'), {});
   const profilePath = path.join(dataDir, 'profile.md');
@@ -353,7 +353,11 @@ function buildState() {
   })();
   const invalidatedMap = readJson(path.join(dataDir, 'state', 'facts-invalidated.json'), {});
   const tierCount = { hard: 0, long: 0, general: 0, temp: 0 };
-  for (const f of facts) if (tierCount[f.tier] !== undefined) tierCount[f.tier]++;
+  // 只数「还在用」的：作废/合并/过期的仍留在列表里可审计，但不计入档位分布
+  for (const f of facts) {
+    if ((f.status || 'active') !== 'active') continue;
+    if (tierCount[f.tier] !== undefined) tierCount[f.tier]++;
+  }
   const logTail = tailBytes(BRIDGE_LOG, 300_000);
   const degraded = (logTail.match(/memory-degraded/g) || []).length;
   const summaryFailed = (logTail.match(/summary-generation-failed/g) || []).length;
@@ -362,7 +366,7 @@ function buildState() {
   const backups = dedupe([
     ...listDir(dataDir).filter((f) => f.includes('.bak')),
     ...listDir(path.join(HERE, 'backup')),
-    ...(BRIDGE_CFG ? listDir(path.dirname(BRIDGE_CFG)).filter((f) => f.startsWith('config.json.bak')) : []),
+    ...listDir(BRIDGE_CFG ? path.join(path.dirname(BRIDGE_CFG), 'backup') : '').filter((f) => f.startsWith('config.json.bak')),
   ]);
 
   const desiredVsLive = MANAGED.filter((k) => {
@@ -383,7 +387,16 @@ function buildState() {
     desired,
     diff: desiredVsLive,
     window: { tokens: windowTokens, threshold, ratio, source, observed },
-    card: {
+    card: (() => {
+      let dropped = 0;
+      let included = 0;
+      try {
+        const facts = longterm.materialize(longterm.readEvents(dataDir).rows || [], longterm.readInvalidated(dataDir));
+        const built = cardMod.buildCard(facts, { ...(mem.profile || {}), maxChars: (mem.profile && mem.profile.maxChars) || 1500 });
+        dropped = (built.dropped || []).length;
+        included = (built.included || []).length;
+      } catch { /* 投影算不出来就不显示，不阻塞页面 */ }
+      return {
       chars: profile.replace(/\s/g, '').length,
       rawChars: profile.length,
       limit: (mem.profile && mem.profile.maxChars) || 1500,
@@ -394,7 +407,10 @@ function buildState() {
       text: profile,
       hardReserveChars: (mem.profile && mem.profile.hardReserveChars) || 400,
       botMaxChars: (mem.profile && mem.profile.botMaxChars) || 200,
-    },
+      included,
+      dropped,
+      };
+    })(),
     daily: {
       lastDailyAt: mstate.lastDailyAt || 0,
       lastArchiveAt: mstate.lastArchiveAt || 0,
@@ -446,6 +462,7 @@ function buildState() {
         };
       } catch (e) { return { cfg: null, shadow: null, error: String((e && e.message) || e) }; }
     })(),
+    folds: foldsView(),
     tiers: tierCount,
     health: {
       degraded, summaryFailed,
@@ -469,7 +486,7 @@ const V10_EDITABLE = ['enabled', 'emit', 'rankInInject', 'recordRetrieved', 'ton
  */
 function saveV10(body = {}) {
   const { mem } = loadBridgeMemory();
-  const dataDir = dataDirOf(mem && mem.dir ? mem.dir : '');
+  const dataDir = mem.dir || DEFAULT_DATA;
   const file = path.join(dataDir, 'v10.json');
   const cur = readJson(file, {}) || {};
   const next = { ...cur };
@@ -576,10 +593,11 @@ function loadDesired() {
 function saveDesired(patch) {
   const cur = loadDesired();
   for (const [k, v] of Object.entries(patch || {})) {
+    // 拼错的键直接拒绝：静默忽略会让人以为改成功了
     if (!(k in DEFAULT_DESIRED)) throw Object.assign(new Error('未知配置项：' + k), { status: 400 });
     if (k === 'dir') {
       const d = normDir(v);
-      if (!isAbsWinPath(d)) throw Object.assign(new Error('数据目录必须是绝对路径'), { status: 400 });
+  if (!isAbsWinPath(d)) throw Object.assign(new Error('数据目录必须是绝对路径，例如 ~/.deepseek-memory/data'), { status: 400 });
       let stat = null;
       try { stat = fs.statSync(d); } catch {}
       if (!stat || !stat.isDirectory()) throw Object.assign(new Error('数据目录不存在：' + d + '（先点「创建目录」）'), { status: 400 });
@@ -603,7 +621,7 @@ function saveDesired(patch) {
   return cur;
 }
 
-// 记忆目录体检：空目录可以，已有 profile.md/state/ 也可以；明显不是就拒（除非 force）
+// 记忆目录体检：空目录可以，已有 profile.md/state/ 也可以；明显不是（比如 D:\ 根、系统目录）就拒
 function assertMemoryDir(dir, { force = false } = {}) {
   if (!isAbsWinPath(dir)) throw Object.assign(new Error('数据目录必须是绝对路径'), { status: 400 });
   let st = null;
@@ -614,7 +632,8 @@ function assertMemoryDir(dir, { force = false } = {}) {
   try { entries = fs.readdirSync(dir); } catch (e) { throw Object.assign(new Error('目录读不了：' + e.message), { status: 400 }); }
   if (path.dirname(dir) === dir) throw Object.assign(new Error('不能把磁盘根目录当记忆目录'), { status: 400 });
   const looks = entries.includes('profile.md') || entries.includes('state') || entries.includes('rules.md') || entries.includes('raw');
-  if (!looks && entries.length > 0) {
+  const empty = entries.length === 0;
+  if (!looks && !empty) {
     throw Object.assign(new Error('这个目录不像记忆目录（缺 profile.md / state/，且不为空）。确认后可用 force:true 强制应用'), { status: 400 });
   }
 }
@@ -622,12 +641,12 @@ function assertMemoryDir(dir, { force = false } = {}) {
 function applyToBridge(body = {}) {
   const cfg = readJson(BRIDGE_CFG, null);
   if (!cfg) throw new Error('读不到桥接 config.json');
-  assertMemoryDir(loadDesired().dir || (cfg.memory && cfg.memory.dir) || DEFAULT_DATA, { force: body.force === true });
-  const dir = path.join(HERE, 'backup');
+  const desired = loadDesired();
+  assertMemoryDir(desired.dir || (cfg.memory && cfg.memory.dir) || DEFAULT_DATA, { force: body.force === true });
+  const dir = path.join(path.dirname(BRIDGE_CFG), 'backup');
   fs.mkdirSync(dir, { recursive: true });
   const stamp = new Date().toISOString().replace(/[:.]/g, '-');
   fs.writeFileSync(path.join(dir, `config.json.bak-${stamp}`), fs.readFileSync(BRIDGE_CFG));
-  const desired = loadDesired();
   cfg.memory = cfg.memory || {};
   if (desired.dir !== undefined) {
     const p = probeDir(desired.dir);
@@ -666,25 +685,49 @@ function cardPreview(query) {
 
 const TIER_HALF_LIFE = { long: 30, general: 3, temp: 1.5 };
 
-const FACT_OPS = ['invalidate', 'reinstate', 'manual', 'reset', 'badhit'];
+const FACT_OPS = ['invalidate', 'reinstate', 'manual', 'reset', 'badhit', 'unmerge', 'feel'];
 
-function factOp({ id, op, reason, tier, score }) {
+function factOp({ id, op, reason, tier, score, feel }) {
   const dataDir = loadBridgeMemory().mem.dir || DEFAULT_DATA;
   if (!id) throw Object.assign(new Error('缺少 id'), { status: 400 });
   if (!FACT_OPS.includes(op)) throw Object.assign(new Error('op 只能是 ' + FACT_OPS.join('/')), { status: 400 });
+  // 不存在的 id 不写墓碑/审计：否则库里会积攒指向空气的墓碑
   {
     const known = longterm.materialize(longterm.readEvents(dataDir).rows, longterm.readInvalidated(dataDir));
     if (!known.some((f) => f.id === id)) throw Object.assign(new Error('没有这条事实：' + id), { status: 404 });
   }
-  // 事件 at 必须是毫秒数（和引擎一致）：引擎用 Number(ev.at) 读，ISO 字符串会变 NaN，
-  // 导致 lastAt 每次被打回「现在」→ 被人工调过的条目永不衰减。审计日志仍用 ISO 方便人看。
-  const at = Date.now();
-  const auditAt = new Date(at).toISOString();
+  // longterm 事件里的 at 必须是数字 epoch：引擎写的是毫秒数，混进 ISO 字符串会让
+  // Number(at) 变 NaN，materialize 每次把 lastAt 重置成「现在」→ 被人工调过的事实永不衰减。
+  const now = Date.now();
+  const at = now;
+  const auditAt = new Date(now).toISOString();
   const audit = (extra) => {
     fs.mkdirSync(path.join(dataDir, 'logs'), { recursive: true });
     fs.appendFileSync(path.join(dataDir, 'logs', 'facts-audit.jsonl'),
       JSON.stringify({ at: auditAt, op, id, by: 'workbench', reason: reason || '', ...extra }) + '\n', 'utf8');
   };
+
+  // 体感印记：给某条事实记一行「当时的感受」（≤40 字，只追加）。
+  if (op === 'feel') {
+    const feelText = String(feel || '').trim().slice(0, 40);
+    if (!feelText) throw Object.assign(new Error('feel 不能为空'), { status: 400 });
+    fs.appendFileSync(path.join(dataDir, 'state', 'longterm.jsonl'),
+      JSON.stringify({ ev: 'feel', id, fact: id, feel: feelText, by: 'workbench', derived: false, at }) + '\n', 'utf8');
+    audit({ feel: feelText });
+    return { id, op, at, feel: feelText };
+  }
+
+  // 拆开合并：把被并进别人的条目恢复成普通事实（可再调档/调分），只追加事件。
+  if (op === 'unmerge') {
+    const before = longterm.materialize(longterm.readEvents(dataDir).rows, longterm.readInvalidated(dataDir));
+    const src = before.find((f) => f.id === id);
+    if (!src.mergedInto) throw Object.assign(new Error('这条没有被合并（status=' + src.status + '）'), { status: 400 });
+    const from = src.mergedInto;
+    fs.appendFileSync(path.join(dataDir, 'state', 'longterm.jsonl'),
+      JSON.stringify({ ev: 'unmerge', id, at, by: 'workbench', reason: reason || '' }) + '\n', 'utf8');
+    audit({ from });
+    return { id, op, at, from };
+  }
 
   // 人工调档 / 调分：写 longterm 事件（不是墓碑），保留历史、可撤销。
   if (op === 'manual' || op === 'reset') {
@@ -717,6 +760,324 @@ function factOp({ id, op, reason, tier, score }) {
 
 /* ---------------- http ---------------- */
 
+
+/* ---------------- 3.0 视图：窗口 / 情境 / 主题 / 账单 ---------------- */
+
+const PRICE_URL = process.env.WORKBENCH_PRICE_MODULE || '';
+let priceMod = null;
+if (PRICE_URL) { try { priceMod = await import(PRICE_URL); } catch (e) { console.warn('[工作台] 价格表不可用：' + e.message); } }
+
+function wbDataDir() {
+  try { const { mem } = loadBridgeMemory(); return mem.dir || DEFAULT_DATA; } catch { return DEFAULT_DATA; }
+}
+function readJsonl(p, limit) {
+  let lines = [];
+  try { lines = fs.readFileSync(p, 'utf8').split('\n'); } catch { return []; }
+  const out = [];
+  for (const line of lines) {
+    if (!line.trim()) continue;
+    try { out.push(JSON.parse(line)); } catch { /* 半行容错 */ }
+  }
+  return limit > 0 ? out.slice(-limit) : out;
+}
+function listNames(dir) { try { return fs.readdirSync(dir); } catch { return []; } }
+
+function tsMs(v) {
+  if (typeof v === 'number' && Number.isFinite(v)) return v;
+  const n = Date.parse(String(v || ''));
+  return Number.isFinite(n) ? n : 0;
+}
+
+function windowView(query = {}) {
+  const root = path.join(wbDataDir(), 'window');
+  const sessions = [];
+  for (const name of listNames(root)) {
+    if (!/^session-/.test(name)) continue;
+    const rows = readJsonl(path.join(root, name, 'turns.jsonl'));
+    const meta = readJson(path.join(root, name, 'meta.json'), {});
+    let last = 0;
+    for (const r of rows) last = Math.max(last, tsMs(r.at));
+    sessions.push({
+      sessionId: name, key: meta.key || '', turns: rows.length,
+      nextTurn: meta.nextTurn || rows.length + 1,
+      chars: rows.reduce((n, r) => n + (Number(r && r.window && r.window.chars) || 0), 0),
+      lastAt: last,
+    });
+  }
+  sessions.sort((a, b) => b.lastAt - a.lastAt || b.turns - a.turns);
+  const mstate = readJson(path.join(wbDataDir(), 'state', 'memory.json'), {});
+  const active = String((mstate.sessions && mstate.sessions['private:10001'] && mstate.sessions['private:10001'].sessionId) || '');
+  for (const s of sessions) s.active = s.sessionId === active;
+  const sid = String(query.session || active || (sessions[0] && sessions[0].sessionId) || '');
+  const rows = sid ? readJsonl(path.join(root, sid, 'turns.jsonl')) : [];
+  const from = Number(query.from) || 0;
+  const to = Number(query.to) || 0;
+  const limit = Math.min(200, Math.max(1, Number(query.limit) || 40));
+  const items = [];
+  for (const r of rows) {
+    const t = Number(r.turn) || 0;
+    if (from && t < from) continue;
+    if (to && t > to) continue;
+    items.push({
+      turn: t, at: r.at, reason: r.reason || '', incomplete: !!r.incomplete,
+      synthetic: !!(r.userRaw && r.userRaw.synthetic),
+      user: String((r.userRaw && r.userRaw.text) || ''),
+      spoken: Array.isArray(r.spoken) ? r.spoken.map((s) => String((s && s.text) || '')).filter(Boolean) : [],
+      reply: String((r.reply && r.reply.text) || ''),
+      feels: Array.isArray(r.feels) ? r.feels.map((f) => String((f && f.text) || '')) : [],
+      chars: Number(r.window && r.window.chars) || 0,
+      blocks: Array.isArray(r.window && r.window.blocks) ? r.window.blocks.map((b) => ({ k: b.k, chars: b.chars })) : [],
+    });
+  }
+  items.reverse();
+  return { sessions, sessionId: sid, from, to, total: rows.length, items: items.slice(0, limit) };
+}
+
+function episodesView(query = {}) {
+  const dir = path.join(wbDataDir(), 'episodes');
+  const byId = new Map();
+  for (const f of listNames(dir)) {
+    if (!/\.jsonl$/.test(f)) continue;
+    for (const ep of readJsonl(path.join(dir, f))) if (ep && ep.id) byId.set(ep.id, ep);
+  }
+  const days = Math.max(1, Math.min(365, Number(query.days) || 14));
+  const since = Date.now() - days * 86400000;
+  const items = [...byId.values()]
+    .filter((ep) => (Date.parse(ep.atTo) || 0) >= since)
+    .sort((a, b) => (Date.parse(b.atFrom) || 0) - (Date.parse(a.atFrom) || 0))
+    .slice(0, 80)
+    .map((ep) => ({
+      id: ep.id, day: ep.day, title: ep.title || '', scene: ep.scene || '',
+      topics: ep.topics || [], thoughts: (ep.thoughts || []).length,
+      feelings: (ep.feelings || []).length, turnFrom: ep.turnFrom, turnTo: ep.turnTo,
+      atFrom: ep.atFrom, atTo: ep.atTo, fidelity: ep.fidelity || '',
+      summarized: !!ep.summarized, sessionId: ep.sessionId || '',
+    }));
+  return { days, count: items.length, items };
+}
+
+function topicsView() {
+  const dir = wbDataDir();
+  const topics = readJsonl(path.join(dir, 'state', 'topics.jsonl'));
+  const facts = longterm.materialize(longterm.readEvents(dir).rows, longterm.readInvalidated(dir));
+  const byTopic = new Map();
+  for (const t of topics) if (t && t.id) byTopic.set(t.id, { ...t, count: 0, slots: {} });
+  let orphan = 0;
+  for (const f of facts) {
+    if ((f.status || 'active') !== 'active') continue;
+    const t = byTopic.get(f.topicId);
+    if (!t) { orphan++; continue; }
+    t.count++;
+    const slot = f.slot || 'other';
+    if (!t.slots[slot]) t.slots[slot] = [];
+    t.slots[slot].push({ id: f.id, value: f.value || f.text || '', tier: f.tier });
+  }
+  const order = ['t-identity', 't-study', 't-photo', 't-horizon6', 't-hust', 't-baoyan', 't-plan', 't-bot', 't-food', 't-routine', 't-life'];
+  const list = [...byTopic.values()].sort((a, b) => {
+    const ia = order.indexOf(a.id), ib = order.indexOf(b.id);
+    return (ia < 0 ? 99 : ia) - (ib < 0 ? 99 : ib) || b.count - a.count;
+  }).map((t) => ({
+    id: t.id, name: t.name || t.id, parentId: t.parentId || '', count: t.count,
+    slots: Object.entries(t.slots).map(([slot, arr]) => ({ slot, label: (topicsMod.SLOT_LABEL && topicsMod.SLOT_LABEL[slot]) || slot, values: arr.slice(0, 4).map((x) => x.value), more: Math.max(0, arr.length - 4) })),
+  }));
+  return { count: list.length, orphan, items: list };
+}
+
+function usageView(query = {}) {
+  const dir = wbDataDir();
+  const days = Math.max(1, Math.min(90, Number(query.days) || 14));
+  const scope = String(query.scope || 'private:10001');
+  const sessionPick = String(query.session || 'all');
+  const turnPick = String(query.turn || 'all');
+  const since = Date.now() - days * 86400000;
+  const raw = readJsonl(path.join(dir, 'logs', 'token-usage.jsonl'), 40000);
+  const dayKey = (ms) => new Date(ms).toLocaleDateString('sv-SE', { timeZone: 'Asia/Shanghai' });
+  const costOf = (r, b) => {
+    if (!priceMod || !priceMod.priceUsage) return 0;
+    try {
+      const p = priceMod.priceUsage(b, { model: r.model, at: Number(r.t) || 0 });
+      return (p.cost && p.cost.total) || 0;
+    } catch { return 0; }
+  };
+  // 轮次类型：把窗口账本里的 synthetic/无原话轮标成「唤醒/派生」，有用户原话的标「用户触发」。
+  const ledger = new Map();
+  for (const name of listNames(path.join(dir, 'window'))) {
+    if (!/^session-/.test(name)) continue;
+    const m = new Map();
+    for (const row of readJsonl(path.join(dir, 'window', name, 'turns.jsonl'))) {
+      m.set(Number(row.turn), !!(row.userRaw && String(row.userRaw.text || '').trim()));
+    }
+    ledger.set(name, m);
+  }
+  const kindOf = (r) => {
+    if (r.turn == null) return 'setup';
+    const m = ledger.get(String(r.sid || ''));
+    if (!m || !m.has(Number(r.turn))) return 'unknown';
+    return m.get(Number(r.turn)) ? 'owner' : 'wake';
+  };
+  const inScope = (r) => scope === 'all' || String(r.key || '(none)') === scope;
+  const scopes = new Map();
+  const sessionAgg = new Map();
+  const byKind = new Map();
+  const totals = { calls: 0, cacheHit: 0, cacheMiss: 0, cacheWrite: 0, output: 0, cost: 0 };
+  let baselineRows = 0;
+  const byDay = new Map();
+  const byModel = new Map();
+  for (const r of raw) {
+    const b0 = r && r.b; if (!b0) continue;
+    // k=base 是会话基线快照（累计值），不是消费；只统计 k=turn 的逐轮采样。
+    if (String(r.k || '') !== 'turn') { baselineRows++; continue; }
+    const hit = Number(b0.cacheHit) || 0, miss = Number(b0.cacheMiss) || 0;
+    const write = Number(b0.cacheWrite) || 0, out = Number(b0.output) || 0;
+    const at = Number(r.t) || 0;
+    if (at < since) continue;
+    const cost = costOf(r, { cacheHit: hit, cacheMiss: miss, cacheWrite: write, output: out });
+    const tokens = hit + miss + write + out;
+    const key = String(r.key || '(none)');
+    const sid = String(r.sid || '(none)');
+    const kind = kindOf(r);
+    const sc = scopes.get(key) || { key, calls: 0, tokens: 0, cost: 0 };
+    if (!inScope(r)) { sc.calls++; sc.tokens += tokens; sc.cost += cost; scopes.set(key, sc); continue; }
+    sc.calls++; sc.tokens += tokens; sc.cost += cost; scopes.set(key, sc);
+
+    const kk = byKind.get(kind) || { kind, calls: 0, tokens: 0, cost: 0 };
+    kk.calls++; kk.tokens += tokens; kk.cost += cost; byKind.set(kind, kk);
+
+    const ss = sessionAgg.get(sid) || { sessionId: sid, calls: 0, tokens: 0, cost: 0, ownerCost: 0, wakeCost: 0, unknownCost: 0 };
+    ss.calls++; ss.tokens += tokens; ss.cost += cost;
+    if (kind === 'owner') ss.ownerCost += cost;
+    else if (kind === 'wake') ss.wakeCost += cost;
+    else if (kind === 'unknown') ss.unknownCost += cost;
+    sessionAgg.set(sid, ss);
+
+    if (sessionPick !== 'all' && sid !== sessionPick) continue;
+    if (turnPick !== 'all' && kind !== turnPick) continue;
+    const day = dayKey(at);
+    const d = byDay.get(day) || { day, calls: 0, cacheHit: 0, cacheMiss: 0, cacheWrite: 0, output: 0, cost: 0 };
+    d.calls++; d.cacheHit += hit; d.cacheMiss += miss; d.cacheWrite += write; d.output += out; d.cost += cost;
+    byDay.set(day, d);
+    const model = String(r.model || 'unknown');
+    const m = byModel.get(model) || { model, calls: 0, tokens: 0, cost: 0 };
+    m.calls++; m.tokens += tokens; m.cost += cost;
+    byModel.set(model, m);
+    totals.calls++; totals.cacheHit += hit; totals.cacheMiss += miss; totals.cacheWrite += write; totals.output += out; totals.cost += cost;
+  }
+  // 记忆侧模型用量：logs/memory-usage.jsonl（caller = handover/profile/extract/episode/entry）
+  const memRaw = readJsonl(path.join(dir, 'logs', 'memory-usage.jsonl'), 20000);
+  const memByCaller = new Map();
+  const memTotals = { calls: 0, fail: 0, input: 0, cacheHit: 0, output: 0, cost: 0 };
+  for (const r of memRaw) {
+    const at = Number(r.t) || 0;
+    if (at < since) continue;
+    const u = r.usage || {};
+    const hit = Number(u.cache_read_input_tokens) || 0;
+    const miss = Number(u.input_tokens) || 0;
+    const write = Number(u.cache_creation_input_tokens) || 0;
+    const out = Number(u.output_tokens) || 0;
+    const cost = costOf({ model: r.model, t: at }, { cacheHit: hit, cacheMiss: miss, cacheWrite: write, output: out });
+    const caller = String(r.caller || 'model');
+    const row = memByCaller.get(caller) || { caller, calls: 0, fail: 0, input: 0, cacheHit: 0, output: 0, cost: 0 };
+    row.calls += 1;
+    if (r.ok === false) row.fail += 1;
+    row.input += miss;
+    row.cacheHit += hit;
+    row.output += out;
+    row.cost += cost;
+    memByCaller.set(caller, row);
+    memTotals.calls += 1;
+    if (r.ok === false) memTotals.fail += 1;
+    memTotals.input += miss;
+    memTotals.cacheHit += hit;
+    memTotals.output += out;
+    memTotals.cost += cost;
+  }
+
+  const totalIn = totals.cacheHit + totals.cacheMiss + totals.cacheWrite;
+  totals.tokens = totalIn + totals.output;
+  totals.hitRate = totalIn ? totals.cacheHit / totalIn : 0;
+  return {
+    days, scope, session: sessionPick, turn: turnPick,
+    totals,
+    baselineRows,
+    scopes: [...scopes.values()].sort((a, b) => b.cost - a.cost),
+    bySession: [...sessionAgg.values()].sort((a, b) => b.cost - a.cost),
+    byKind: [...byKind.values()].sort((a, b) => b.cost - a.cost),
+    byDay: [...byDay.values()].sort((a, b) => a.day.localeCompare(b.day)),
+    byModel: [...byModel.values()].sort((a, b) => b.tokens - a.tokens),
+    memory: {
+      totals: memTotals,
+      byCaller: [...memByCaller.values()].sort((a, b) => b.cost - a.cost)
+    },
+    priceVersion: priceMod ? priceMod.PRICE_TABLE_VERSION : '',
+  };
+}
+
+
+/* ---------------- 折叠检测（记忆 3.0 §17） ---------------- */
+
+function foldsView() {
+  const dir = wbDataDir();
+  const mstate = readJson(path.join(dir, 'state', 'memory.json'), {});
+  const presets = auditPresets();
+  const sessions = [];
+  for (const [key, rec] of Object.entries(mstate.sessions || {})) {
+    if (!rec || typeof rec !== 'object') continue;
+    const sid = String(rec.sessionId || '');
+    const rows = sid ? readJsonl(path.join(dir, 'window', sid, 'turns.jsonl')) : [];
+    const imported = rows.filter((r) => r && r.fidelity === 'session-log').length;
+    sessions.push({
+      key, sessionId: sid,
+      folded: Boolean(rec.folded), foldedAt: rec.foldedAt || 0, foldedReason: String(rec.foldedReason || ''),
+      turns: rows.length, imported,
+      lastAt: rows.length ? Math.max(0, ...rows.map((r) => tsMs(r.at))) : 0,
+    });
+  }
+  sessions.sort((a, b) => (b.foldedAt || b.lastAt) - (a.foldedAt || a.lastAt));
+  return {
+    ok: presets.ok,
+    presets,
+    folded: sessions.filter((s) => s.folded),
+    sessions,
+    guard: { logFile: path.join(dir, 'logs', 'fold-guard.log'), exists: fs.existsSync(path.join(dir, 'logs', 'fold-guard.log')) },
+  };
+}
+
+/* ---------------- 记忆数据导出 ---------------- */
+
+function exportView(query = {}) {
+  const dir = wbDataDir();
+  const withWindow = String(query.window || '') === '1';
+  const facts = longterm.materialize(longterm.readEvents(dir).rows, longterm.readInvalidated(dir));
+  const profile = (() => { try { return fs.readFileSync(path.join(dir, 'profile.md'), 'utf8'); } catch { return '' } })();
+  const topics = readJsonl(path.join(dir, 'state', 'topics.jsonl'));
+  const episodes = [];
+  for (const name of listNames(path.join(dir, 'episodes'))) {
+    if (!/\.jsonl$/.test(name)) continue;
+    for (const ep of readJsonl(path.join(dir, 'episodes', name))) if (ep && ep.id) episodes.push(ep);
+  }
+  episodes.sort((a, b) => String(a.atFrom || '').localeCompare(String(b.atFrom || '')));
+  const sessions = [];
+  if (withWindow) {
+    for (const name of listNames(path.join(dir, 'window'))) {
+      if (!/^session-/.test(name)) continue;
+      const rows = readJsonl(path.join(dir, 'window', name, 'turns.jsonl'));
+      sessions.push({ sessionId: name, meta: readJson(path.join(dir, 'window', name, 'meta.json'), {}), turns: rows });
+    }
+  }
+  const bundle = {
+    format: 'deepseek-memory-export/1',
+    exportedAt: new Date().toISOString(),
+    dataDir: dir,
+    profile,
+    facts,
+    topics,
+    episodes,
+    counts: { facts: facts.length, topics: topics.length, episodes: episodes.length, windowSessions: sessions.length },
+  };
+  if (withWindow) bundle.window = sessions;
+  return bundle;
+}
+
 const routes = {
   'GET /api/state': () => buildState(),
   'POST /api/config': (body) => ({ desired: saveDesired(body), savedAt: Date.now() }),
@@ -726,6 +1087,12 @@ const routes = {
   'POST /api/v10': (body) => saveV10(body || {}),
   'POST /api/checkdir': (body) => checkDir(body || {}),
   'GET /api/card': (body, query) => cardPreview(query),
+  'GET /api/window': (body, query) => windowView(query),
+  'GET /api/episodes': (body, query) => episodesView(query),
+  'GET /api/topics': () => topicsView(),
+  'GET /api/usage': (body, query) => usageView(query),
+  'GET /api/folds': () => foldsView(),
+  'GET /api/export': (body, query) => exportView(query),
 };
 
 const send = (res, code, body, type = 'application/json; charset=utf-8') => {
@@ -735,25 +1102,7 @@ const send = (res, code, body, type = 'application/json; charset=utf-8') => {
   res.end(buf);
 };
 
-const server = http.createServer((req, res) => {
-  const url = new URL(req.url, 'http://127.0.0.1');
-  if (req.method !== 'GET') {
-    // Host 必须是本机：否则改个 hosts 把 evil.com 指到 127.0.0.1 就能伪装同源（DNS rebinding）
-    const host = String(req.headers.host || '').toLowerCase();
-    const hostOk = host === '127.0.0.1:' + PORT || host === 'localhost:' + PORT || host === '[::1]:' + PORT;
-    if (!hostOk) return send(res, 403, { error: 'Host 不被接受（只允许本机回环地址）' });
-    const origin = String(req.headers.origin || '');
-    const site = String(req.headers['sec-fetch-site'] || '');
-    const allowed = origin === '' || origin === 'http://127.0.0.1:' + PORT || origin === 'http://localhost:' + PORT;
-    if (!allowed || site === 'cross-site') return send(res, 403, { error: '跨站写请求被拒绝' });
-    // 只收 JSON：杜绝表单类 CSRF（那类不带预检）
-    const ctype = String(req.headers['content-type'] || '').toLowerCase();
-    if (!ctype.includes('application/json')) return send(res, 415, { error: '写请求必须是 application/json' });
-    const got = String(req.headers['x-workbench-token'] || url.searchParams.get('token') || '');
-    if (!WORKBENCH_TOKEN) return send(res, 500, { error: '工作台没拿到写令牌（检查 .workbench-token 或 WORKBENCH_TOKEN）' });
-    if (got !== WORKBENCH_TOKEN) return send(res, 401, { error: '缺少或错误的 x-workbench-token' });
-  }
-
+const server = http.createServer((req, res) => {  const url = new URL(req.url, 'http://127.0.0.1');
   if (req.method === 'GET' && (url.pathname === '/' || url.pathname === '/index.html')) {
     try {
       const html = fs.readFileSync(path.join(PUBLIC, 'index.html'), 'utf8')
@@ -780,6 +1129,27 @@ const server = http.createServer((req, res) => {
   const handler = routes[key];
   if (!handler) return send(res, 404, { error: 'not found' });
 
+  // 写操作校验：设了 WORKBENCH_TOKEN 就必须带 x-workbench-token；
+  // 没设则只监听 127.0.0.1（本来就是这样），启动日志里会给一句警告。
+  // 浏览器跨站 + DNS rebinding 兜底
+  if (req.method !== 'GET') {
+    // Host 必须是本机：否则改个 hosts 把 evil.com 指到 127.0.0.1 就能伪装同源
+    const host = String(req.headers.host || '').toLowerCase();
+    const hostOk = host === '127.0.0.1:' + PORT || host === 'localhost:' + PORT || host === '[::1]:' + PORT;
+    if (!hostOk) return send(res, 403, { error: 'Host 不被接受（只允许本机回环地址）' });
+    const origin = String(req.headers.origin || '');
+    const site = String(req.headers['sec-fetch-site'] || '');
+    const allowed = origin === '' || origin === 'http://127.0.0.1:' + PORT || origin === 'http://localhost:' + PORT;
+    if (!allowed || site === 'cross-site') return send(res, 403, { error: '跨站写请求被拒绝' });
+    // 只收 JSON：杜绝表单类 CSRF（那类不带预检）
+    const ctype = String(req.headers['content-type'] || '').toLowerCase();
+    if (!ctype.includes('application/json')) return send(res, 415, { error: '写请求必须是 application/json' });
+  }
+  if (req.method !== 'GET' && WORKBENCH_TOKEN) {
+    const got = String(req.headers['x-workbench-token'] || url.searchParams.get('token') || '');
+    if (got !== WORKBENCH_TOKEN) return send(res, 401, { error: '缺少或错误的 x-workbench-token' });
+  }
+
   let raw = '';
   req.on('data', (c) => { raw += c; if (raw.length > 1_000_000) req.destroy(); });
   req.on('end', () => {
@@ -800,5 +1170,6 @@ server.listen(PORT, '127.0.0.1', () => {
   console.log(`记忆工作台  http://127.0.0.1:${PORT}`);
   console.log(`数据目录    ${s.dataDir}`);
   console.log(`窗口        ${s.window.tokens.toLocaleString()} (${s.window.source})  阈值 ${s.window.threshold.toLocaleString()}`);
-  console.log(`会话        ${s.sessions.length} 个；事实 ${s.facts.length} 条；卡 ${s.card.chars}/${s.card.limit} 字`);
+  console.log(`会话        ${s.sessions.length} 个；事实 ${s.facts.length} 条；卡 ${s.card.chars}/${s.card.limit} 字（收录 ${s.card.included}，挤出 ${s.card.dropped}）`);
+  if (!WORKBENCH_TOKEN) console.log('提示        未设 WORKBENCH_TOKEN：写接口只靠“仅监听 127.0.0.1”，本机其他程序可直接调');
 });

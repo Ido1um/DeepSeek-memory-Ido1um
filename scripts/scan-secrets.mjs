@@ -1,58 +1,96 @@
 #!/usr/bin/env node
-// 发布前自检：在仓库里找不该出现的东西。
+// 发布前隐私扫描：确认仓库里没有本机路径、令牌、真实账号或私人词。
 //
+// 用法：
 //   node scripts/scan-secrets.mjs            # 扫当前目录
-//   node scripts/scan-secrets.mjs --dir ..   # 扫指定目录
+//   node scripts/scan-secrets.mjs <dir>      # 扫指定目录
+//   PRIVATE_WORDS="某某,某地" node scripts/scan-secrets.mjs
 //
-// 退出码：0 = 干净，1 = 有命中。
+// 命中任何一条都以退出码 1 结束，方便接进 CI 或发布脚本。
 
 import fs from 'node:fs';
 import path from 'node:path';
 
-const args = process.argv.slice(2);
-const dirFlag = args.indexOf('--dir');
-const root = path.resolve(dirFlag >= 0 ? args[dirFlag + 1] : process.cwd());
+const ROOT = path.resolve(process.argv[2] || process.cwd());
+const SKIP_DIRS = new Set(['node_modules', '.git', 'data', 'dist']);
 
-const SKIP_DIRS = new Set(['node_modules', '.git', 'data', 'raw', 'state', 'logs', 'digests', 'shadow', 'scratch', '_private']);
-const TEXT_EXT = /\.(mjs|js|cjs|ts|json|md|txt|yml|yaml|cmd|bat|ps1|vbs|html|css)$/i;
+// 允许出现在示例/测试里的占位账号（不是真实账号）
+// 10001/10002：README 与测试夹具里的示例私聊对象
+// 20002：测试夹具里的示例群号
+const PLACEHOLDER_IDS = new Set(['10001', '10002', '20002', '123456']);
 
-const PATTERNS = [
-  { name: 'Windows 本机路径', re: /[A-Za-z]:\\\\(Users|work program|03生产)/ },
-  { name: '会话 key 里的真实 QQ 号', re: /(?:private|group):\d{6,}/ },
-  { name: '疑似令牌', re: /\b(?:[A-Fa-f0-9]{32,}|sk-[A-Za-z0-9]{20,}|token["'=:\s]{1,4}[A-Za-z0-9]{20,})/ },
-  { name: '本机用户名', re: /C:\\Users\\(admin|administrator)\b/i },
-  { name: '常见密钥字段', re: /"(?:consoleToken|apiKey|api_key|secret|password)"\s*:\s*"[^"$]{8,}"/ },
+const RULES = [
+  { name: 'Windows 用户目录', re: /[A-Za-z]:\\Users\\[^\\\s"']+/i },
+  { name: '本机工作盘路径', re: /[A-Za-z]:\\(?:work|projects?|dev|code|src)\\[^\s"']+/i },
+  { name: '会话 key 里的真实账号', re: /\b(?:private|group):(\d{5,12})\b/g, allow: (m) => PLACEHOLDER_IDS.has(m[1]) },
+  { name: '疑似令牌（32+ 位十六进制）', re: /\b[0-9a-f]{32,}\b/i },
+  { name: '疑似 API key', re: /\bsk-[A-Za-z0-9_-]{16,}\b/ },
+  { name: '凭据赋值', re: /\b(?:api[_-]?key|token|secret|password|passwd)\b\s*[:=]\s*["'][^"'\s]{8,}["']/i, allow: (m) => /process\.env|示例|your-|test-token|xxx|<.*>/i.test(m[0]) },
+  { name: '私钥块', re: /-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----/ },
 ];
 
-const findings = [];
-function walk(dir) {
+const EXTRA = String(process.env.PRIVATE_WORDS || '')
+  .split(/[,，\s]+/)
+  .map((s) => s.trim())
+  .filter(Boolean);
+
+function walk(dir, out = []) {
   for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
     if (e.isDirectory()) {
       if (SKIP_DIRS.has(e.name)) continue;
-      walk(path.join(dir, e.name));
-      continue;
+      walk(path.join(dir, e.name), out);
+    } else if (e.isFile()) {
+      out.push(path.join(dir, e.name));
     }
-    if (!TEXT_EXT.test(e.name)) continue;
-    if (e.name === 'scan-secrets.mjs') continue;
-    if (/\.(png|jpg|jpeg|gif|webp)$/i.test(e.name)) continue;
-    const file = path.join(dir, e.name);
-    const lines = fs.readFileSync(file, 'utf8').split(/\r?\n/);
-    lines.forEach((line, i) => {
-      // 允许的自动生成内容：LICENSE / 版本号 / 截图文件名
-      if (/^\s*(\/\/|#|\*)/.test(line) && /示例|example|例如/.test(line)) return;
-      for (const p of PATTERNS) {
-        if (p.re.test(line)) findings.push({ file: path.relative(root, file), line: i + 1, rule: p.name, text: line.trim().slice(0, 100) });
-      }
-    });
+  }
+  return out;
+}
+
+function isText(file) {
+  try {
+    const fd = fs.openSync(file, 'r');
+    const buf = Buffer.alloc(4096);
+    const n = fs.readSync(fd, buf, 0, buf.length, 0);
+    fs.closeSync(fd);
+    if (buf.subarray(0, n).includes(0)) return false;
+    return true;
+  } catch {
+    return false;
   }
 }
 
-walk(root);
+const hits = [];
+for (const file of walk(ROOT)) {
+  const rel = path.relative(ROOT, file).replace(/\\/g, '/');
+  if (rel === 'scripts/scan-secrets.mjs' || rel === 'MANIFEST.json') continue;
+  if (/(^|\/)\.workbench-token$/.test(rel)) {
+    hits.push({ rel, line: 0, rule: '工作台令牌文件', sample: rel });
+    continue;
+  }
+  if (!isText(file)) continue;
+  const text = fs.readFileSync(file, 'utf8');
+  const lines = text.split('\n');
+  for (let i = 0; i < lines.length; i += 1) {
+    const line = lines[i];
+    for (const rule of RULES) {
+      rule.re.lastIndex = 0;
+      const m = rule.re.exec(line);
+      if (!m) continue;
+      if (rule.allow && rule.allow(m)) continue;
+      hits.push({ rel, line: i + 1, rule: rule.name, sample: String(m[0]).slice(0, 40) });
+    }
+    for (const word of EXTRA) {
+      if (line.includes(word)) hits.push({ rel, line: i + 1, rule: 'PRIVATE_WORDS', sample: word });
+    }
+  }
+}
 
-if (!findings.length) {
-  console.log('✓ 扫描干净：' + root);
+if (!hits.length) {
+  console.log(`隐私扫描通过：${walk(ROOT).length} 个文件，未发现本机路径/令牌/真实账号。`);
   process.exit(0);
 }
-console.log(`✗ 命中 ${findings.length} 处：`);
-for (const f of findings) console.log(`  ${f.file}:${f.line} [${f.rule}] ${f.text}`);
+
+console.error(`隐私扫描发现 ${hits.length} 处问题：`);
+for (const h of hits.slice(0, 80)) console.error(`  ${h.rel}:${h.line}  [${h.rule}]  ${h.sample}`);
+if (hits.length > 80) console.error(`  …还有 ${hits.length - 80} 处`);
 process.exit(1);

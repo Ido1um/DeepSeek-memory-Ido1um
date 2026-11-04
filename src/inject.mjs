@@ -9,10 +9,10 @@ import { trimLines } from './rules.mjs';
 
 export const INJECT_BUDGET = {
   rules: 600,
-  card: 1200,
+  card: 1500,
   tasks: 200,
   retrieval: 500,
-  total: 2500
+  total: 2800
 };
 
 const clampInt = (v, lo, hi, dft) => {
@@ -59,7 +59,9 @@ export function assemble(parts = {}, rawBudget = INJECT_BUDGET) {
   }
 
   // 卡片：只按长度裁（卡内部已按 hard→高分→新近 排序，硬事实天然在最前）
-  const cardTrim = trimLines(parts.cardText || '', budget.card);
+  const cardTrim = trimLines(parts.cardText || '', budget.card, {
+    note: (n) => `\n…（其余 ${n} 条已省略）`
+  });
   if (cardTrim.text) {
     sections.push({ name: 'card', text: cardTrim.text, chars: cardTrim.chars, truncated: cardTrim.truncated });
     used.card = cardTrim.chars;

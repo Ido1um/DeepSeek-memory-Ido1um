@@ -310,7 +310,7 @@ export function recordIncoming({ key, text, sender, isOwner = false, time, messa
 }
 
 export function recordOutgoing({ key, text, time, messageId, source = 'assistant' } = {}) {
-  return recordMessage({ key, role: 'assistant', text, sender: '助手', time, messageId, source });
+  return recordMessage({ key, role: 'assistant', text, sender: '小助手', time, messageId, source });
 }
 
 /** 把 7 天窗口之外的 hot 日目录移动到 archive；返回移动的文件数。 */
@@ -656,7 +656,7 @@ export function buildHandover(key, { now = Date.now(), maxChars, startMs = 0 } =
     }
 
     const recent = use.slice(-10).map((r) => {
-      const role = r.role === 'assistant' ? '助手' : (r.sender || '用户');
+      const role = r.role === 'assistant' ? '小助手' : (r.sender || '用户');
       return `[${dayStr(new Date(r.ts).getTime())}] ${role}：${String(r.text ?? '').slice(0, 140)}`;
     });
 
@@ -742,7 +742,9 @@ export function renderProfileCard() {
   if (!c.profileEnabled) return '';
   const text = readProfile();
   if (!text) return '';
-  const body = text.length > c.profileMaxChars ? `${text.slice(0, c.profileMaxChars - 20)}…` : text;
+  let body = text.length > c.profileMaxChars ? `${text.slice(0, c.profileMaxChars - 20)}…` : text;
+  // profile.md 里已经带标题行：渲染时先摘掉，避免卡头重复两遍
+  body = body.replace(/^【长期记忆（事实卡）】\s*\n（[^\n]*）\s*\n?/, '').trim();
   return `【长期记忆（事实卡）】\n（长期有效的事实与约定，按需参考；和用户最新的话冲突时以最新的话为准。）\n${body}`;
 }
 
@@ -781,6 +783,46 @@ export function markProfileInjected(sessionId) {
   } catch {
     return false;
   }
+}
+
+/**
+ * 规则「按会话只注入一次」的记账（rules.mode=session 用）。
+ * 只记录 sessionId + 规则哈希 + 注入时刻 + 之后的轮数，规则正文不落这里。
+ */
+export function rulesInjectedFor(sessionId) {
+  const r = getState().rulesInjected;
+  if (!r || String(r.sessionId || '') !== String(sessionId || '')) return null;
+  return { sessionId: String(r.sessionId), hash: String(r.hash || ''), at: Number(r.at) || 0, turns: Number(r.turns) || 0 };
+}
+
+export function bumpRulesTurns(sessionId) {
+  try {
+    const st = getState();
+    const r = st.rulesInjected;
+    if (!r || String(r.sessionId || '') !== String(sessionId || '')) return 0;
+    r.turns = (Number(r.turns) || 0) + 1;
+    saveStateSoon();
+    return r.turns;
+  } catch {
+    return 0;
+  }
+}
+
+export function markRulesInjected(sessionId, hash) {
+  try {
+    const st = getState();
+    st.rulesInjected = { sessionId: String(sessionId || ''), hash: String(hash || ''), at: Date.now(), turns: 0 };
+    saveStateSoon();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export function rulesInfo() {
+  const r = getState().rulesInjected;
+  if (!r) return null;
+  return { sessionId: String(r.sessionId || ''), hash: String(r.hash || ''), at: Number(r.at) || 0, turns: Number(r.turns) || 0 };
 }
 
 /**

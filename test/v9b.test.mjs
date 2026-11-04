@@ -4,7 +4,7 @@
 //   3) token 日志按会话过滤时，无 sid 的老行不混进别的会话；
 //   4) doctor 的「作废墓碑可读」真的去校验原文存在，孤儿墓碑会报 ✗；
 //   5) doctor 会报出打分配置里的未知键（拼错的开关不再静默失效）。
-// 全部离线：临时目录 + 纯函数，不碰任何真实数据。
+// 全部离线：临时目录 + 纯函数，不碰生产数据。
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -47,7 +47,7 @@ test('settle：任务过期事件的原因写 task-overdue，普通临时过期�
   const dir = tmp(t);
   const now = Date.parse('2026-10-31T12:00:00+08:00');
   lt.appendEvent(
-    { ev: 'fact', id: 'h-task-1', at: now - 20 * DAY, about: 'user', pattern: 'due', text: '交周报', tier: 'general', I: 0.8, s: 3, task: true, due: '2026-10-20', dueAt: now - 10 * DAY, lastAt: now - 20 * DAY },
+    { ev: 'fact', id: 'h-task-1', at: now - 20 * DAY, about: 'user', pattern: 'due', text: '交物理实验报告', tier: 'general', I: 0.8, s: 3, task: true, due: '2026-10-20', dueAt: now - 10 * DAY, lastAt: now - 20 * DAY },
     dir
   );
   const summary = settle({ now, scoring: { mode: 'write' }, dir });

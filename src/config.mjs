@@ -1,8 +1,7 @@
-// 配置读取层：读取 config.json（位置由 paths.mjs 决定，默认 <home>/.deepseek-memory/config.json）。
+// 配置读取层：本包不要求 config.json 在自己目录里，而是读取宿主程序指定的 config.json。
 //
 // 优先级（路径）：
 //   1. env `QQ_MEMORY_CONFIG` 指定的文件（测试、换机时用）
-//   2. 默认 `<home>/.deepseek-memory/config.json`
 //
 // 优先级（数据目录）：env `QQ_MEMORY_DIR` > config.memory.dir > DEFAULT_DIR。
 //
@@ -10,12 +9,11 @@
 
 import fs from 'node:fs';
 import os from 'node:os';
-import { DEFAULT_CONFIG_FILE, DEFAULT_DATA_DIR } from './paths.mjs';
 import path from 'node:path';
 import { readRef } from './miniyaml.mjs';
 
-export const DEFAULT_DIR = DEFAULT_DATA_DIR;
-export const DEFAULT_CONFIG_PATH = DEFAULT_CONFIG_FILE;
+export const DEFAULT_DIR = path.join(os.homedir(), '.deepseek-memory', 'data');
+export const DEFAULT_CONFIG_PATH = '';
 export const DEFAULT_OWNER_QQ = '10001';
 export const DEFAULT_BASE_URL = 'https://api.deepseek.com/anthropic/v1';
 export const DEFAULT_MODEL = 'deepseek-v4-flash';

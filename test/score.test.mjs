@@ -145,10 +145,10 @@ test('硬事实抽取：你生日 → about=bot（我的事）', () => {
   assert.equal(f.subject, '你');
 });
 
-test('硬事实抽取：以后叫我助手 → nickname', () => {
-  const [f] = extractHardFacts('以后叫我助手就好');
+test('硬事实抽取：以后叫我小助手 → nickname', () => {
+  const [f] = extractHardFacts('以后叫我小助手就好');
   assert.equal(f.key, 'nickname');
-  assert.equal(f.value, '助手就好');
+  assert.equal(f.value, '小助手就好');
 });
 
 test('疑问句不当事实：你生日几号？ / 我妈生日是哪天', () => {

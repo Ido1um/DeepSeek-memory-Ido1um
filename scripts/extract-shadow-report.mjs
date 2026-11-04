@@ -5,7 +5,6 @@
 //   node scripts/extract-shadow-report.mjs                 # 最近 7 天，抽 30 条
 //   node scripts/extract-shadow-report.mjs --days 3 --sample 20
 //   node scripts/extract-shadow-report.mjs --json          # 机器可读
-//   node scripts/extract-shadow-report.mjs --dir "<数据目录>"
 //
 // 人工验收口径（方案 §6）：抽样 30 条精确率 ≥90%、重复率 <10%、卡增长 <200 字/天。
 import path from 'node:path';

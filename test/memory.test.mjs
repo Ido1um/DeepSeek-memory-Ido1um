@@ -1,7 +1,6 @@
 // 7 天滚动记忆的离线自测（不连 DSH、不发 QQ）。
 //
 // 用法：node scripts/test-memory.mjs
-// 每个场景用独立的临时目录（QQ_MEMORY_DIR），不碰生产日志 ~/.deepseek-memory/data。
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -77,21 +76,21 @@ function writeJson(file, value) {
 // ── 1. 日志写入、去重、范围过滤 ──────────────────────────────────────────────
 scenario('日志：用户私聊 user+assistant 各一条，同 messageId 不重复', () => {
   const root = tmpDir();
-  assert.equal(recordIncoming({ key: KEY, text: '记住，以后白饭要加量', sender: '用户', isOwner: true, messageId: '1001' }), true);
+  assert.equal(recordIncoming({ key: KEY, text: '记住，以后米饭要加量', sender: '用户', isOwner: true, messageId: '1001' }), true);
   assert.equal(recordOutgoing({ key: KEY, text: '唔……记住了，用户真会点菜', messageId: '2001' }), true);
   // 同一条消息重投（DSH 重连/补投）不能写第二遍
-  assert.equal(recordIncoming({ key: KEY, text: '记住，以后白饭要加量', sender: '用户', isOwner: true, messageId: '1001' }), false);
+  assert.equal(recordIncoming({ key: KEY, text: '记住，以后米饭要加量', sender: '用户', isOwner: true, messageId: '1001' }), false);
   const file = hotFile(root);
   const rows = readJsonl(file);
   assert.equal(rows.length, 2, `期望 2 行，实际 ${rows.length}`);
   assert.deepEqual(rows.map((r) => r.role), ['user', 'assistant']);
   assert.equal(rows[0].messageId, '1001');
-  assert.equal(rows[1].sender, '助手');
+  assert.equal(rows[1].sender, '小助手');
 });
 
 scenario('日志：群聊与他人私聊不写入', () => {
   const root = tmpDir();
-  assert.equal(recordIncoming({ key: 'group:10002', text: '群里说句话', sender: '群友' }), false);
+  assert.equal(recordIncoming({ key: 'group:20002', text: '群里说句话', sender: '群友' }), false);
   assert.equal(recordIncoming({ key: 'private:999', text: '陌生人私聊' }), false);
   assert.equal(fs.existsSync(path.join(root, 'raw', 'hot')), false, 'raw/hot 目录不该被创建');
 });
@@ -106,7 +105,7 @@ scenario('日志：空文本且无媒体不写', () => {
 scenario('检索：关键词命中、无结果空数组、日期过滤', () => {
   const root = tmpDir();
   const now = Date.now();
-  recordIncoming({ key: KEY, text: '明天想吃白饭和西瓜', sender: '用户', time: now, messageId: '11' });
+  recordIncoming({ key: KEY, text: '明天想吃米饭和西瓜', sender: '用户', time: now, messageId: '11' });
   recordOutgoing({ key: KEY, text: '西瓜！用户带西瓜了吗？', time: now, messageId: '12' });
   recordIncoming({ key: KEY, text: '今天聊的是显存海啸', sender: '用户', time: now, messageId: '13' });
 
@@ -114,7 +113,7 @@ scenario('检索：关键词命中、无结果空数组、日期过滤', () => {
   assert.equal(hit.length, 2, `关键词「西瓜」应命中 2 条，实际 ${hit.length}`);
   assert.ok(hit.every((r) => r.text.includes('西瓜')));
 
-  const multi = searchMessages({ key: KEY, query: '白饭 西瓜' });
+  const multi = searchMessages({ key: KEY, query: '米饭 西瓜' });
   assert.ok(multi.length >= 2);
 
   assert.deepEqual(searchMessages({ key: KEY, query: '草莓蛋糕' }), []);
@@ -295,12 +294,12 @@ scenario('归档：窗口外的日目录移走，窗口内的留下', () => {
 
 scenario('事实卡：写入/读取/渲染，每个会话只注入一次', () => {
   tmpDir();
-  const chars = writeProfile('- 用户叫助手「胖鱼」\n- 用户生日 11 月 2 日');
+  const chars = writeProfile('- 用户叫小助手「小助手」\n- 用户生日 3 月 15 日');
   assert.ok(chars > 0, '写入应返回字数');
-  assert.ok(readProfile().includes('胖鱼'));
+  assert.ok(readProfile().includes('小助手'));
   const card = renderProfileCard();
   assert.ok(card.includes('【长期记忆（事实卡）】'), card);
-  assert.ok(card.includes('胖鱼'), card);
+  assert.ok(card.includes('小助手'), card);
   assert.equal(profileInjectedFor('session-x'), false);
   markProfileInjected('session-x');
   assert.equal(profileInjectedFor('session-x'), true);
@@ -310,7 +309,7 @@ scenario('事实卡：写入/读取/渲染，每个会话只注入一次', () =>
 
 scenario('事实卡兜底：模型不可用时从原文提取并合并旧卡', () => {
   tmpDir();
-  const transcript = '[2026-10-26] 用户：我的生日是 11 月 2 日，记住\n[2026-10-26] 助手：唔……人家记住了\n[2026-10-26] 用户：明天想吃白饭';
+  const transcript = '[2026-10-26] 用户：我的生日是 3 月 15 日，记住\n[2026-10-26] 小助手：唔……人家记住了\n[2026-10-26] 用户：明天想吃米饭';
   const text = extractProfileFallback({ previousProfile: '- 用户称呼：用户', transcript, maxChars: 300 });
   assert.ok(text.includes('生日'), text);
   assert.ok(text.includes('- 用户称呼：用户'), '旧卡条目应保留');

@@ -26,16 +26,22 @@ export const SCORING_DEFAULTS = Object.freeze({
   demoteLongFloor: 40, // 降级不归零：S 保留到 floor 天
   generalToTemp: 30, // 一般分数 <30 → 临时
   tempTtlDays: 7, // 临时 7 天没提 → 软删
+  eventTtlDays: 7, // 事件（去过哪、发生了什么）7 天后软删，否则事件类 S=∞ 会永远挂着
   taskTtlDays: 7, // 待办截止后 7 天还没结掉 → 软删（不再提醒、不占卡；事件流仍在）
+  writeGate: true, // 写入门：候选落库前再筛一道（技术讨论/转述/不确定/临时状态/太薄）
+  // v11：前门分级。strict = 保持旧行为（五类全拦）；broad = 只拦确定错，
+  // 其余打标进库（低置信 / chat 类 / bot 侧 / 太薄），交给后续归并收敛。
+  gateMode: 'strict',
+  // v11 观察期：broad 模式下被打标的候选先只进影子文件、不落事实库。
+  // 观察 3 天确认没漏进坏数据，再把它关掉（false）让低置信事实真正落库。
+  gateShadow: true,
+  chatTtlDays: 7, // chat 类（寒暄/状态）保留天数；不进卡、不进检索
 
   negativePenalty: 0.3, // 每被否定一次 I −0.3
   suspectAt: 2, // 被否定 2 次标记 suspect
-  // v8 分类稳定度：不写的类走 halfLifeDays；pref 单独给 90 天
-  classStability: { rule: null, persona: null, identity: null, event: null, task: null, pref: 90, note: null },
+  // v8 分类稳定度：不写的类走 halfLifeDays；pref 单独给 90 天；chat 只活半天
+  classStability: { rule: null, persona: null, identity: null, event: null, task: null, pref: 90, note: null, chat: 0.5 },
   suggestInvalidateAt: 3, // 3 次建议作废
-  // 写入门（src/gate.mjs）：抽出来的候选还要过一层「像不像值得长期记的东西」。
-  // 关掉就是旧行为（候选照写），用于回滚或排查。
-  writeGate: true,
 });
 
 export const SECOND = 1000;
@@ -43,41 +49,42 @@ export const MINUTE = 60 * SECOND;
 export const HOUR = 60 * MINUTE;
 export const DAY = 24 * HOUR;
 
-/** 扁平别名 → 嵌套键（老配置与工作台面板用的是 halfLifeLong 这种写法，必须仍然生效）。 */
+/** 扁平写法 → 嵌套键：配置文件里一直是 halfLifeLong/promoteHits 这种扁平键。 */
 const FLAT_HALF = { halfLifeLong: 'long', halfLifeGeneral: 'general', halfLifeTemp: 'temp' };
-const pos = (v) => (Number.isFinite(+v) && +v > 0 ? +v : undefined);
+const pos = (v) => (v != null && Number.isFinite(+v) && +v > 0 ? +v : null);
 
 function withFlatAliases(patch = {}) {
   const p = { ...(patch || {}) };
-  const flat = {};
-  for (const [k, t] of Object.entries(FLAT_HALF)) {
-    if (p[k] != null && pos(p[k]) !== undefined) flat[t] = pos(p[k]);
-    delete p[k];
+  const half = {};
+  for (const [flat, tier] of Object.entries(FLAT_HALF)) {
+    const v = pos(p[flat]);
+    if (v != null) half[tier] = v;
+    delete p[flat];
   }
-  if (Object.keys(flat).length) p.halfLifeDays = { ...(p.halfLifeDays || {}), ...flat };
-  const pr = { ...(p.promote || {}) };
-  if (pos(p.promoteHits) !== undefined) pr.hits = pos(p.promoteHits);
-  if (pos(p.promoteScore) !== undefined) pr.score = pos(p.promoteScore);
+  if (Object.keys(half).length) p.halfLifeDays = { ...(p.halfLifeDays || {}), ...half };
+  const promote = {};
+  if (pos(p.promoteHits) != null) promote.hits = pos(p.promoteHits);
+  if (pos(p.promoteScore) != null) promote.score = pos(p.promoteScore);
   delete p.promoteHits;
   delete p.promoteScore;
-  if (p.demoteFloor != null) {
-    p.demoteLongFloor = pos(p.demoteFloor) ?? p.demoteLongFloor;
-    delete p.demoteFloor;
-  }
-  if (Object.keys(pr).length) p.promote = pr;
+  if (Object.keys(promote).length) p.promote = { ...(p.promote || {}), ...promote };
+  if (pos(p.demoteFloor) != null) p.demoteLongFloor = pos(p.demoteFloor);
+  delete p.demoteFloor;
   return p;
 }
 
 /** 合并配置：只认认识的键，数值非法时回落默认。 */
 export function normalizeConfig(patch = {}) {
-  const src = withFlatAliases(patch);
   const c = { ...SCORING_DEFAULTS, halfLifeDays: { ...SCORING_DEFAULTS.halfLifeDays } };
-  for (const [k, v] of Object.entries(src || {})) {
+  for (const [k, v] of Object.entries(withFlatAliases(patch))) {
     if (v == null) continue;
     if (k === 'halfLifeDays' && typeof v === 'object') {
       for (const [t, d] of Object.entries(v)) if (Number.isFinite(+d) && +d > 0) c.halfLifeDays[t] = +d;
     } else if (k === 'promote' && typeof v === 'object') {
-      c.promote = { ...c.promote, ...v };
+      const merged = { ...c.promote };
+      if (pos(v.hits) != null) merged.hits = pos(v.hits);
+      if (pos(v.score) != null) merged.score = pos(v.score);
+      c.promote = merged;
     } else if (k in SCORING_DEFAULTS && typeof SCORING_DEFAULTS[k] === typeof v) {
       // 数值键必须是正有限数，否则回落默认（防止 0 / 负数把衰减算崩）
       if (typeof v === 'number' && !(Number.isFinite(v) && v > 0)) continue;
@@ -87,19 +94,13 @@ export function normalizeConfig(patch = {}) {
   return c;
 }
 
-/** 没被识别、会被丢弃的配置键（CLI / doctor 用来提示拼写错误）。 */
+/** 配置里出现但代码不认识的键（CLI/doctor 用；只提示，不炸）。 */
 export function unknownScoringKeys(patch = {}) {
-  const known = new Set([
-    ...Object.keys(SCORING_DEFAULTS),
-    ...Object.keys(FLAT_HALF),
-    'promoteHits',
-    'promoteScore',
-    'demoteFloor',
-    // mode / versioning 是 memory.scoring 的合法开关，但不由数值合并读取
-    'mode',
-    'versioning'
-  ]);
-  return Object.keys(withFlatAliases(patch)).filter((k) => !known.has(k));
+  // mode / versioning 不在 SCORING_DEFAULTS 里，但确实是 memory.scoring 的合法开关
+  // （它们由 scoring-runner / facts 读，不进 normalizeConfig 的数值合并）。
+  const ALLOWED_EXTRA = new Set(['mode', 'versioning']);
+  const p = withFlatAliases(patch);
+  return Object.keys(p).filter((k) => !(k in SCORING_DEFAULTS) && !ALLOWED_EXTRA.has(k));
 }
 
 const clamp01 = (x) => Math.min(1, Math.max(0, x));
@@ -221,6 +222,13 @@ export function tierAfter(fact = {}, now = Date.now(), cfg = SCORING_DEFAULTS) {
   const score = scoreOf(fact, now, cfg);
   const hits = fact.hits ?? 0;
   const days = daysSince(fact.lastHitAt ?? fact.lastAt ?? fact.since, now);
+
+  // 事件有时效：超过 eventTtlDays 就软删。事件类 S=Infinity，
+  // 不单独给 TTL 的话会永远 active、检索里一直占位。
+  if (fact.class === 'event') {
+    const ttl = Number(fact.ttlDays ?? cfg.eventTtlDays) || 7;
+    if (days > ttl) return 'expired';
+  }
 
   // 升：长期
   if (fact.tier !== 'long' && hits >= cfg.promote.hits && score >= cfg.promote.score) return 'long';

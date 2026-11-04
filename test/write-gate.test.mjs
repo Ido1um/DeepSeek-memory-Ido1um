@@ -51,7 +51,7 @@ test('写入门：不确定的话不写，明确叮嘱仍然放行', () => {
 });
 
 test('写入门：临时状态不写，长期事实照常过', () => {
-  const t = writeGate('晚安了，小胖鱼', cand({ value: '晚安了，小胖鱼' }));
+  const t = writeGate('晚安了，小助手', cand({ value: '晚安了，小助手' }));
   assert.equal(t.ok, false);
   assert.equal(t.reason, 'transient');
 
@@ -111,7 +111,7 @@ test('写入门：日常闲聊一条都不写（真实语料抽样）', () => {
   const dir = tmpDir();
   const ts = Date.now();
   const lines = [
-    '晚安了，小胖鱼',
+    '晚安了，小助手',
     '这张好看吗，别人家的鱼画的，你要不要也模仿这张画一张[图片]',
     '我觉得这张是你之前画的最好的[图片]',
     '今天刚到，已经翻了翻，感觉数学基础目前是够的'

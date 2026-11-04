@@ -8,7 +8,7 @@
 // 影子模式的目的：先用真实流量验证「抽得对不对、分数算得对不对、量有多大」，
 // 一天没问题再把 mode 切成 write，代码路径完全一致，只是换个文件落地。
 
-import { detectSignals, topicOf, classOf, subjectTag } from './facts.mjs';
+import { isMeta, isTemporal, confidenceOf, detectSignals, topicOf, classOf, subjectTag, milestoneOf, quotedMilestones, isQuestion, cleanValue, feelOf } from './facts.mjs';
 import { parseDue } from './due.mjs';
 import {
   SCORING_DEFAULTS,
@@ -80,8 +80,10 @@ export function classify(text, cfg = SCORING_DEFAULTS, opts = {}) {
   const signals = detectSignals(t);
   const candidates = [];
   if (!t) return { signals, candidates };
+  // 转述/引用了机器人原话里的里程碑：即使外层是疑问句，也要记
+  const quotedMs = quotedMilestones(t);
   // 疑问句不当事实；但「记住…呢」是陈述式叮嘱，不该被问号规则误杀
-  if (signals.question && !(signals.explicitRemember && !/[？?]\s*$/.test(t))) {
+  if (signals.question && !quotedMs.length && !(signals.explicitRemember && !/[？?]\s*$/.test(t))) {
     return { signals, candidates };
   }
 
@@ -91,8 +93,19 @@ export function classify(text, cfg = SCORING_DEFAULTS, opts = {}) {
     const subject = f.subject || '';
     const soft = f.soft === true;
     const multi = f.multi === true && !soft;
+    // 爱好/器材：多值属性走 long 档（不占 hard 永久位），重要度 0.85
+    const attrLong = f.key === 'hobby' || f.key === 'gear';
     const value = String(f.value || '').trim();
     if ((soft || multi) && !value) continue;
+    // A6：按模式置信度缩放重要度；置信度 <0.6 的只进一般档
+    const conf = confidenceOf(f.key);
+    let I = soft ? (signals.explicitRemember ? importanceOf({ explicitRemember: true }, cfg) : 0.6) : attrLong ? 0.85 : 1;
+    I = Math.round(I * (0.6 + 0.4 * conf) * 100) / 100;
+    let tier = soft ? 'general' : attrLong ? 'long' : 'hard';
+    let cls = soft || attrLong ? 'pref' : classOf(t, { hard: true });
+    // A4：聊记忆系统本身 / 未定事实 → 记 note + 一般档，I 封顶 0.4（只降档不丢）
+    if (isMeta(t) || isTemporal(t)) { cls = 'note'; tier = 'general'; I = Math.min(I, 0.4); }
+    if (conf < 0.6 && tier === 'hard') tier = 'general';
     const tag = subjectTag(subject);
     const sig = soft || multi ? sigOfSubject(about, pattern, subject) + `:${value}` : sigOfSubject(about, pattern, subject);
     const topic = soft
@@ -110,12 +123,45 @@ export function classify(text, cfg = SCORING_DEFAULTS, opts = {}) {
       value: f.value || '',
       text: t.slice(0, 200),
       quote: t.slice(0, 200),
-      // 偏好是「喜欢什么」不是硬事实：走 general 档、pref 类，靠复习慢慢升
-      class: soft ? 'pref' : classOf(t, { hard: true }),
-      tier: soft ? 'general' : 'hard',
-      // 偏好平时 0.6；明确说「记住」说明在意，抬到备注级
-      I: soft ? (signals.explicitRemember ? importanceOf({ explicitRemember: true }, cfg) : 0.6) : 1
+      class: cls,
+      tier,
+      I,
+      confidence: conf
     });
+  }
+
+  // 里程碑：「第一次/头一回/首次 + 动作」——事件类，长期保存（这类不进 hard，但也不该 7 天就淡出）
+  for (const q of quotedMs) {
+    const value = String(q.value || '').slice(0, 24);
+    const sig = sigOf(q.about, 'first', shortHash(value));
+    candidates.push({
+      sig, topic: topicOf(t, { about: q.about, pattern: 'first', sig }),
+      about: q.about, pattern: 'first', label: '首次', value,
+      text: t.slice(0, 200), quote: q.quote || t.slice(0, 200),
+      class: 'event', tier: 'long', I: 0.8, confidence: 0.8
+    });
+  }
+
+  if (!candidates.length) {
+    const ms = milestoneOf(t);
+    if (ms) {
+      const value = String(ms.value || '').slice(0, 24);
+      const sig = sigOf(ms.about, 'first', shortHash(value));
+      candidates.push({
+        sig,
+        topic: topicOf(t, { about: ms.about, pattern: 'first', sig }),
+        about: ms.about,
+        pattern: 'first',
+        label: '首次',
+        value,
+        text: t.slice(0, 200),
+        quote: t.slice(0, 200),
+        class: 'event',
+        tier: 'long',
+        I: 0.8,
+        confidence: 0.8
+      });
+    }
   }
 
   if (!candidates.length && signals.explicitRemember) {
@@ -138,6 +184,7 @@ export function classify(text, cfg = SCORING_DEFAULTS, opts = {}) {
       class: classOf(t, { dueAt: Boolean(due && due.dueAt) }),
       tier: 'general',
       I: importanceOf({ explicitRemember: true }, cfg),
+      confidence: confidenceOf('note'),
       ...(due ? { task: true, due: due.due, dueAt: due.dueAt, duePhrase: due.phrase } : {})
     });
   }
@@ -161,6 +208,7 @@ export function classify(text, cfg = SCORING_DEFAULTS, opts = {}) {
         class: 'task',
         tier: 'general',
         I: importanceOf({ explicitRemember: true }, cfg),
+        confidence: confidenceOf('note'),
         task: true,
         due: due.due,
         dueAt: due.dueAt,
@@ -169,7 +217,7 @@ export function classify(text, cfg = SCORING_DEFAULTS, opts = {}) {
     }
   }
 
-  // v10：候选补轻量属性与原文片段（关闭时不给候选加字段，事件流逐字节不变）
+  // v10：候选补三个轻量属性 + 原文片段（关闭时不加字段，事件流逐字节不变）
   if (opts.attrs && candidates.length) {
     const a = attrsOf(t);
     for (const c of candidates) {
@@ -202,10 +250,9 @@ export function recordInbound({ key = '', text = '', ts = Date.now(), scoring, d
 
   // 影子模式要「自己折自己」（否则同一条信息第二次出现会被当成新事实），
   // 同时也要看见已写入的事实，所以合并两路事件流。
-  const events = mode === 'shadow'
-    ? [...lt.readEvents(dir).rows, ...lt.readShadow(0, dir).rows]
-    : lt.readEvents(dir).rows;
-  const active = lt.materialize(events, lt.readInvalidated(dir))
+  const active = (mode === 'shadow'
+    ? lt.materialize([...lt.readEvents(dir).rows, ...lt.readShadow(0, dir).rows], lt.readInvalidated(dir))
+    : lt.openIndex(dir).facts())
     .filter((f) => f.status === 'active')
     .reduce((m, f) => {
       if (!m.has(f.sig)) m.set(f.sig, f);
@@ -215,8 +262,11 @@ export function recordInbound({ key = '', text = '', ts = Date.now(), scoring, d
   const added = [];
   const mentioned = [];
   const blocked = [];
-  // 同值归并：偏好/备注换了个说法但说的仍是同一件事（爱吃火锅 → 最爱火锅），
-  // 不该再开一条新事实，记成对已有那条的一次提及。
+  const marked = [];
+  const markedShadow = [];
+
+  // 同一件事换个说法（喜欢/最爱、同一句叮嘱）不该再开一条新事实。
+  // 只在偏好与备注里做同值归并：属性类允许不同人/不同对象有相同的值。
   const byValue = new Map();
   for (const f of active.values()) {
     if (f.class !== 'pref' && f.class !== 'note') continue;
@@ -224,16 +274,49 @@ export function recordInbound({ key = '', text = '', ts = Date.now(), scoring, d
     if (!byValue.has(k)) byValue.set(k, f);
   }
 
-  for (const c of candidates) {
-    const gate = writeGate(text, c, { cfg });
+  // A5：值级去重的索引（同 about + 同族类，双向 includes 视为同一条）
+  const normVal = (v) => String(v || '').toLowerCase().replace(/\s+/g, '').replace(/[，。！？；、,.!?;:、"'"'"'（）()【】\[\]]/g, '');
+  const activeList = [...active.values()];
+
+  for (const raw of candidates) {
+    // 写入门：值不值得进长期库（技术讨论/转述/不确定/临时状态/太薄都挡在外面）
+    const gate = writeGate(text, raw, { cfg });
     if (!gate.ok) {
-      blocked.push({ sig: c.sig, reason: gate.reason, value: String(c.value || '').slice(0, 40) });
+      blocked.push({ sig: raw.sig, reason: gate.reason, value: String(raw.value || '').slice(0, 40) });
       continue;
+    }
+    // v11 broad 模式：mark 类放行，但降置信、加类目/归属标记，交给后续归并收敛
+    const c = gate.mark
+      ? {
+        ...raw,
+        conf: Number.isFinite(gate.conf) ? gate.conf : raw.conf,
+        ...(gate.classHint ? { class: gate.classHint } : {}),
+        ...(gate.tierHint ? { tier: gate.tierHint } : {}),
+        ...(gate.aboutHint ? { about: gate.aboutHint } : {}),
+        ...(gate.privateHint ? { private: true } : {})
+      }
+      : raw;
+    if (gate.mark) {
+      marked.push({ sig: c.sig, reason: gate.reason, value: String(c.value || '').slice(0, 40) });
     }
     // 老备注用的是整句哈希；新规则用「去噪后的内容 + 日期」，第一次换用新键时要认回老事实
     let prior = active.get(c.sig) || (c.legacySig ? active.get(c.legacySig) : null);
+    // 同义换了说法（「爱吃」→「喜欢」）按提及处理，不再开第二条
     if (!prior && (c.class === 'pref' || c.class === 'note')) {
       prior = byValue.get(`${c.about || 'user'}|${c.class}|${String(c.value || '').trim()}`) || null;
+    }
+    // A5：属性类也做值级归并（「摄影」与「摄影（Z8X…）」→ 同一条提及）
+    if (!prior) {
+      const nv = normVal(c.value);
+      if (nv && nv.length >= 3) {
+        for (const f of activeList) {
+          if (f.about !== c.about) continue;
+          if (f.class !== c.class) continue;
+          const fv = normVal(f.value);
+          if (!fv) continue;
+          if (fv === nv || fv.includes(nv) || nv.includes(fv)) { prior = f; break; }
+        }
+      }
     }
     if (prior) {
       const gain = mentionGain(prior, ts, cfg);
@@ -277,9 +360,12 @@ export function recordInbound({ key = '', text = '', ts = Date.now(), scoring, d
       mentioned.push({ id: prior.id, sig: c.sig, s: next.s, hits: next.hits });
     } else {
       const s = stabilityOf({ tier: c.tier, class: c.class }, cfg);
+      // 观察期：打了标的候选只进影子，不进事实库
+      const toShadow = mode === 'shadow' || (gate.mark === true && cfg.gateShadow !== false);
       const row = {
         ev: 'fact',
-        id: lt.newId(mode === 'shadow' ? 's' : 'h'),
+        src: { kind: 'log', day: new Date(ts).toISOString().slice(0, 10), quote: String(text || '').replace(/\s+/g, ' ').slice(0, 80) },
+        id: lt.newId(toShadow ? 's' : 'h'),
         sig: c.sig,
         key,
         about: c.about,
@@ -290,6 +376,8 @@ export function recordInbound({ key = '', text = '', ts = Date.now(), scoring, d
         quote: c.quote || c.text,
         topic: c.topic,
         class: c.class || 'note',
+        ...(Number.isFinite(c.conf) ? { conf: round2(c.conf) } : {}),
+        ...(c.private === true ? { private: true } : {}),
         ...(itemId ? { source: { id: itemId } } : {}),
         tier: c.tier,
         I: round2(c.I),
@@ -297,13 +385,14 @@ export function recordInbound({ key = '', text = '', ts = Date.now(), scoring, d
         hits: 1,
         lastAt: ts,
         at: ts,
-        // v10：只有开启时才写属性（关闭时事件与旧版逐字节一致）
+        // v10 属性（enabled=false 时 c.emo 为 undefined，事件里不会多字段）
         ...(c.emo != null ? { emo: c.emo, rel: c.rel || 0, scene: c.scene || [], fragments: c.fragments || [] } : {}),
         ...(c.task ? { task: true, due: c.due, dueAt: c.dueAt, duePhrase: c.duePhrase } : {})
       };
-      if (mode === 'write') lt.appendEvent(row, dir);
-      else lt.appendShadow(row, dir);
-      added.push(row);
+      if (toShadow) lt.appendShadow(row, dir);
+      else lt.appendEvent(row, dir);
+      if (toShadow && mode === 'write') markedShadow.push(row);
+      else added.push(row);
     }
   }
 
@@ -328,11 +417,13 @@ export function recordInbound({ key = '', text = '', ts = Date.now(), scoring, d
     added: added.length,
     mentioned: mentioned.length,
     ...(blocked.length ? { blocked: blocked.map((b) => b.reason) } : {}),
+    ...(marked.length ? { marked: marked.map((m) => m.reason) } : {}),
+    ...(markedShadow.length ? { markedShadow: markedShadow.length } : {}),
     ids: [...added.map((r) => r.id), ...mentioned.map((r) => r.id)],
     text
   });
 
-  return { mode, added, mentioned, blocked, signals };
+  return { mode, added, mentioned, blocked, marked, markedShadow, signals };
 }
 
 /** 观测日志：每收到一条消息追加一行到 <dir>/logs/scoring.log（出问题靠它复盘）。 */
@@ -348,6 +439,7 @@ function logLine(dir, row) {
       added: row.added || 0,
       mentioned: row.mentioned || 0,
       ...(Array.isArray(row.blocked) && row.blocked.length ? { blocked: row.blocked } : {}),
+      ...(Array.isArray(row.marked) && row.marked.length ? { marked: row.marked } : {}),
       ids: row.ids || [],
       text: String(row.text || '').replace(/\s+/g, ' ').slice(0, 80)
     };
@@ -365,10 +457,9 @@ export function settle({ now = Date.now(), scoring, dir = '' } = {}) {
   const cfg = normalizeScoring(scoring);
   if (cfg.mode === 'off') return { mode: 'off', skipped: true, transitions: [] };
 
-  const eventsIn = cfg.mode === 'shadow'
-    ? [...lt.readEvents(dir).rows, ...lt.readShadow(0, dir).rows]
-    : lt.readEvents(dir).rows;
-  const facts = lt.materialize(eventsIn, lt.readInvalidated(dir)).filter((f) => f.status === 'active');
+  const facts = (cfg.mode === 'shadow'
+    ? lt.materialize([...lt.readEvents(dir).rows, ...lt.readShadow(0, dir).rows], lt.readInvalidated(dir))
+    : lt.openIndex(dir).facts()).filter((f) => f.status === 'active');
   const transitions = [];
   const byTier = { hard: 0, long: 0, general: 0, temp: 0, expired: 0 };
   const events = [];
@@ -440,40 +531,245 @@ export function tokensOf(query = '') {
  * 检索：档位优先（hard → long → general → temp），同档按分数；默认过滤作废/过期。
  * @returns {Array} describe() 结果 + text
  */
-export function search({ query = '', limit = 5, now = Date.now(), scoring, includeInvalidated = false, facts: provided, dir = '', includeHistory = false, recordRetrieved: recordOpt = false, recordBy = 'search', match = 'substring' } = {}) {
+/**
+ * 扫一天的原文日志，把「机器人自己说的第一次」补成事实（用户在提问里转述同一句时也能命中）。
+ * 只认 assistant 行 + 里程碑词；按值去重；返回写入的条数。日终维护调用，失败不影响主流程。
+ */
+export function scanMilestones({ dir, day, now = Date.now() } = {}) {
+  try {
+    const base = path.join(dir, 'raw', 'hot', String(day || ''));
+    if (!fs.existsSync(base)) return { added: 0, scanned: 0 };
+    const events = lt.readEvents(dir).rows || [];
+    const known = new Set(
+      lt.materialize(events, lt.readInvalidated(dir))
+        .filter((f) => f.status === 'active')
+        .map((f) => String(f.value || '').trim())
+    );
+    let scanned = 0;
+    let added = 0;
+    for (const name of fs.readdirSync(base)) {
+      if (!name.endsWith('.jsonl')) continue;
+      const lines = fs.readFileSync(path.join(base, name), 'utf8').split(/\r?\n/);
+      for (const line of lines) {
+        if (!line.trim()) continue;
+        let row;
+        try { row = JSON.parse(line); } catch { continue; }
+        if (row.role !== 'assistant' || !row.text) continue;
+        scanned += 1;
+        const ms = milestoneOf(row.text);
+        if (!ms || ms.about !== 'bot') continue;
+        const value = String(ms.value || '').trim();
+        if (!value || known.has(value)) continue;
+        const sig = sigOf('bot', 'first', shortHash(value));
+        const at = Date.parse(row.ts || '') || now;
+        lt.appendEvent({
+          ev: 'fact', id: lt.newId('h'), sig, key: row.key, about: 'bot',
+          pattern: 'first', label: '首次', value, text: String(row.text).slice(0, 200),
+          quote: String(row.text).slice(0, 200), topic: 'bot:first',
+          class: 'event', tier: 'long', I: 0.8, s: 365 * 3, hits: 1,
+          source: { milestone: true, speaker: 'assistant' }, lastAt: at, at
+        }, dir);
+        const factId = lt.readEvents(dir).rows.filter((r) => r.ev === 'fact').slice(-1)[0]?.id;
+        const feel = feelOf(String(row.text || ''));
+        if (factId && feel) {
+          lt.appendEvent({ ev: 'feel', fact: factId, id: factId, feel, quote: String(row.text).slice(0, 200), by: 'self', derived: false, at }, dir);
+        }
+        known.add(value);
+        added += 1;
+      }
+    }
+    return { added, scanned };
+  } catch (e) {
+    return { added: 0, scanned: 0, error: String(e && e.message ? e.message : e) };
+  }
+}
+
+/** 机器人自述里值得记的那几类（比里程碑宽，但只认第一人称断言、不问句）。 */
+const SELF_DECL = /(?:我)(?:是|叫|住|喜欢|爱吃|爱|讨厌|不喜欢|怕|养|在学|答应|保证|决定)/;
+const SELF_NOISE = /(不是|没有|别看|你|吗|什么|怎么|为什么|如果|要是|的话|说过|说过可|记错)/;
+
+/** 取动词后的第一个短句当值（去掉的/了/标点），太短或含噪声返回空。 */
+function selfValue(text, m) {
+  const rest = String(text).slice(m.index + m[0].length).replace(/^[的了哦呀啊，、\s]+/, '');
+  const seg = rest.split(/[，。！？；\n]/)[0].trim();
+  if (!seg || seg.length < 2 || seg.length > 20) return '';
+  if (SELF_NOISE.test(seg)) return '';
+  return cleanValue(seg, 20);
+}
+
+/**
+ * 扫一天的原文日志，把「助手自己说的事」补成事实：
+ *   - 里程碑（第一次…）：class=event / tier=long / I=0.8
+ *   - 自述（我是/我叫/我喜欢/我答应…）：class=note / tier=general / I=0.55（低权重，可人工改）
+ * includeSelf=false 时只扫里程碑。按值去重，失败不影响主流程。
+ */
+export function scanAssistantFacts({ dir, day, now = Date.now(), includeSelf = true, dryRun = false } = {}) {
+  const out = { added: 0, scanned: 0, picked: [] };
+  try {
+    const base = path.join(dir, 'raw', 'hot', String(day || ''));
+    if (!fs.existsSync(base)) return out;
+    const events = lt.readEvents(dir).rows || [];
+    const known = new Set(
+      lt.materialize(events, lt.readInvalidated(dir))
+        .filter((f) => f.status === 'active')
+        .map((f) => String(f.value || '').replace(/\s+/g, '').trim())
+    );
+    const covered = (v) => {
+      const nv = String(v || '').replace(/\s+/g, '');
+      if (!nv) return true;
+      for (const k of known) if (k && (k === nv || k.includes(nv) || nv.includes(k))) return true;
+      return false;
+    };
+    for (const name of fs.readdirSync(base)) {
+      if (!name.endsWith('.jsonl')) continue;
+      for (const line of fs.readFileSync(path.join(base, name), 'utf8').split(/\r?\n/)) {
+        if (!line.trim()) continue;
+        let row;
+        try { row = JSON.parse(line); } catch { continue; }
+        if (row.role !== 'assistant' || !row.text) continue;
+        out.scanned += 1;
+        const text = String(row.text);
+        const at = Date.parse(row.ts || '') || now;
+        const ms = milestoneOf(text);
+        const msVal = ms && ms.about === 'bot' ? String(ms.value || '').trim() : '';
+        if (msVal && !covered(msVal)) {
+          out.picked.push({ kind: 'first', value: msVal, quote: text.slice(0, 200), at, key: row.key || '' });
+          known.add(msVal.replace(/\s+/g, ''));
+          continue;
+        }
+        if (!includeSelf || isQuestion(text) || isMeta(text)) continue;
+        const m = SELF_DECL.exec(text);
+        if (!m) continue;
+        const value = selfValue(text, m);
+        if (!value || value.length < 3 || covered(value)) continue;
+        out.picked.push({ kind: 'self', value, quote: text.slice(0, 200), at });
+        known.add(value.replace(/\s+/g, ''));
+      }
+    }
+    if (dryRun) return out;
+    for (const p of out.picked) {
+      const isFirst = p.kind === 'first';
+      const sig = sigOf('bot', isFirst ? 'first' : 'note', shortHash(p.value));
+      lt.appendEvent({
+        ev: 'fact', id: lt.newId('h'), sig, key: p.key || 'private:', about: 'bot',
+        pattern: isFirst ? 'first' : 'self',
+        label: isFirst ? '首次' : '自述',
+        value: p.value, text: p.quote, quote: p.quote,
+        topic: isFirst ? 'bot:first' : 'bot:self',
+        class: isFirst ? 'event' : 'note',
+        tier: isFirst ? 'long' : 'general',
+        I: isFirst ? 0.8 : 0.55,
+        s: isFirst ? 365 * 3 : 3,
+        hits: 1, source: { speaker: 'assistant', first: isFirst }, lastAt: p.at, at: p.at
+      }, dir);
+      out.added += 1;
+    }
+    return out;
+  } catch (e) {
+    return { ...out, error: String(e && e.message ? e.message : e) };
+  }
+}
+
+export function search({
+  query = '',
+  limit = 5,
+  now = Date.now(),
+  scoring,
+  includeInvalidated = false,
+  facts: provided,
+  dir = '',
+  includeHistory = false,
+  recordRetrieved: recordOpt = false,
+  recordBy = 'search',
+  match = 'substring'
+} = {}) {
   const cfg = normalizeScoring(scoring);
-  // limit<=0 表示“不要结果”，而不是悄悄回退成默认条数
+  // limit<=0 表示“不要结果”，而不是悄悄回退成默认条数（CLI/HTTP 调用方会误判）
   const want = Number(limit);
   if (Number.isFinite(want) && want <= 0) return [];
   const q = String(query ?? '').trim();
-  const eventsIn = cfg.mode === 'shadow'
-    ? [...lt.readEvents(dir).rows, ...lt.readShadow(0, dir).rows]
-    : lt.readEvents(dir).rows;
-  const source = Array.isArray(provided) ? provided : lt.materialize(eventsIn, lt.readInvalidated(dir));
-  const facts = source.filter((f) => includeInvalidated || f.status === 'active');
-  // match='tokens'：整句切成二元组，任一词命中即可（真实聊天是整句话，substring 几乎匹配不到）
-  const tokens10 = q && match === 'tokens' ? tokensOf(q) : null;
-  // 切不出二元组的超短查询（「鱼」「嗯」）回退 substring，避免 tokens 模式反而查不到
-  const hitTokens = tokens10 && tokens10.length ? tokens10 : null;
-  const ranked = facts
-    .map((f) => {
-      const d = { ...describe(f, now, cfg), id: f.id, status: f.status, label: f.label, text: f.text, sig: f.sig, about: f.about, value: f.value, pattern: f.pattern, topic: f.topic || '', quote: f.quote || '', lastAt: f.lastAt || 0, versions: Number(f.versions) || 1, accessCount: Number(f.accessCount) || 0, lastRetrievedAt: Number(f.lastRetrievedAt) || 0, emo: Number(f.emo) || 0, rel: Number(f.rel) || 0, scene: Array.isArray(f.scene) ? f.scene : [], fragments: Array.isArray(f.fragments) ? f.fragments : [] };
-      // 命中判定：值/原文/标签/sig/模式，任一包含关键词即可；tokens 模式按词命中
-      const hit = q
-        ? (hitTokens
-          ? hitTokens.some((tk) => [f.text, f.value, f.label, f.sig, f.pattern].some((s) => String(s ?? '').includes(tk)))
-          : [f.text, f.value, f.label, f.sig, f.pattern].some((s) => String(s ?? '').includes(q)))
-        : false;
-      const tierRank = { hard: 4, long: 3, general: 2, temp: 1 }[f.tier] || 0;
-      // v8 反自强化：被判定「无关」2 次以上的事实检索降权（不删、可恢复）
-      const badPenalty = (Number(f.badHits) || 0) >= 2 ? 500 : 0;
-      return { ...d, badHits: Number(f.badHits) || 0, hit, rank: tierRank * 1000 + d.score + (hit ? 500 : 0) - badPenalty };
-    })
-    // 有关键词时只返回真正命中的事实：档位再高也不能因为"hard"就混进无关结果
-    .filter((r) => (q ? r.hit : true))
-    .sort((a, b) => b.rank - a.rank);
+  const source = Array.isArray(provided)
+    ? provided
+    : (cfg.mode === 'shadow'
+      ? lt.materialize([...lt.readEvents(dir).rows, ...lt.readShadow(0, dir).rows], lt.readInvalidated(dir))
+      : lt.openIndex(dir).facts());
 
-  // v8 版本链（默认关）：同主题只保留最新一条；includeHistory=true 返回全量供审计
+  const TIER_RANK = { hard: 4, long: 3, general: 2, temp: 1 };
+  const limitN = Math.max(1, Number(limit) || 5);
+  // 版本链要跨「同主题」比较，必须先看全量；不开的时候只描述最终要返回的那几条
+  const fastPath = !cfg.versioning || includeHistory;
+  const topK = fastPath ? Math.max(limitN * 3, 30) : Infinity;
+
+  // 命中判定：5 个字段任一包含关键词即可。不建数组、不转小写（中文无大小写，
+  // 转小写会在 3 万条上产生大量临时字符串）。
+  // match='tokens' 时改为「整句切成二元组，任一词命中」——真实聊天是整句话，
+  // substring 模式几乎永远匹配不到（只有 CLI 拿关键词查时才有效）。
+  // 短到切不出二元组（「鱼」「嗯」）时退回整句 substring，避免 tokens 模式反而查不到。
+  const hitTokens = match === 'tokens' ? tokensOf(q) : null;
+  const tokenHit = hitTokens && hitTokens.length ? hitTokens : null;
+  const hitOf = (f) => {
+    if (!q) return false;
+    if (tokenHit) {
+      for (const tk of tokenHit) {
+        if ([f.text, f.value, f.label, f.sig, f.pattern].some((x) => typeof x === 'string' && x.includes(tk))) return true;
+      }
+      return false;
+    }
+    const t = f.text;
+    if (t && typeof t === 'string' ? t.includes(q) : false) return true;
+    const v = f.value;
+    if (v && typeof v === 'string' ? v.includes(q) : false) return true;
+    const l = f.label;
+    if (l && typeof l === 'string' ? l.includes(q) : false) return true;
+    const g = f.sig;
+    if (g && typeof g === 'string' ? g.includes(q) : false) return true;
+    const p2 = f.pattern;
+    return Boolean(p2 && typeof p2 === 'string' && p2.includes(q));
+  };
+
+  // 第一遍只算排序键（scoreOf 是纯算术，不构造对象、不算下次复习时间）
+  const scored = [];
+  for (const f of source) {
+    if (!includeInvalidated && f.status !== 'active') continue;
+    // v11：chat 类（寒暄/临时状态）永不进检索，只留在库里等过期
+    if (String(f.class || '') === 'chat') continue;
+    const hit = hitOf(f);
+    if (q && !hit) continue;
+    const bad = (Number(f.badHits) || 0) >= 2 ? 500 : 0;
+    const rank = (TIER_RANK[f.tier] || 0) * 1000 + scoreOf(f, now, cfg) + (hit ? 500 : 0) - bad;
+    scored.push({ f, rank, hit });
+  }
+  scored.sort((a, b) => b.rank - a.rank);
+
+  // 第二遍：只把要返回的那几条做成完整描述
+  const take = Number.isFinite(topK) ? scored.slice(0, topK) : scored;
+  const ranked = take.map(({ f, rank, hit }) => ({
+    ...describe(f, now, cfg),
+    feel: (Array.isArray(f.feels) && f.feels.length) ? f.feels[f.feels.length - 1].feel : '',
+    id: f.id,
+    src: f.src || null,
+    status: f.status,
+    label: f.label,
+    text: f.text,
+    sig: f.sig,
+    about: f.about,
+    value: f.value,
+    pattern: f.pattern,
+    topic: f.topic || '',
+    quote: f.quote || '',
+    lastAt: f.lastAt || 0,
+    versions: Number(f.versions) || 1,
+    badHits: Number(f.badHits) || 0,
+    accessCount: Number(f.accessCount) || 0,
+    lastRetrievedAt: Number(f.lastRetrievedAt) || 0,
+    emo: Number(f.emo) || 0,
+    rel: Number(f.rel) || 0,
+    scene: Array.isArray(f.scene) ? f.scene : [],
+    fragments: Array.isArray(f.fragments) ? f.fragments : [],
+    hit,
+    rank
+  }));
+
   let out = ranked;
   if (cfg.versioning && !includeHistory) {
     const latest = new Map();
@@ -483,14 +779,18 @@ export function search({ query = '', limit = 5, now = Date.now(), scoring, inclu
       if (!cur || (r.lastAt || 0) > (cur.lastAt || 0)) latest.set(k, r);
     }
     out = ranked.filter((r) => latest.get(r.topic || r.sig || r.id) === r);
+    const seen = new Map();
+    for (const r of ranked) {
+      const k = r.topic || r.sig || r.id;
+      seen.set(k, (seen.get(k) || 0) + 1);
+    }
     for (const r of out) {
       const k = r.topic || r.sig || r.id;
-      // 版本数 = max(库里记的 supersede 次数, 同主题当前可见条数)，不能覆盖成 1
-      const seen = ranked.filter((x) => (x.topic || x.sig || x.id) === k).length;
-      r.versions = Math.max(Number(r.versions) || 1, seen);
+      r.versions = Math.max(Number(r.versions) || 1, seen.get(k) || 1);
     }
   }
-  // v10：只在这条路径上补激活值/可信度；关闭时输出与旧版逐字段一致（不多加字段）
+
+  // v10：只在这条路径上补激活值/可信度；关闭时 out 与旧版逐字段一致（多出来的字段都不加）
   const v10cfg = loadV10(dir);
   if (v10cfg.enabled) {
     const byId = new Map(source.map((f) => [f.id, f]));
@@ -508,8 +808,9 @@ export function search({ query = '', limit = 5, now = Date.now(), scoring, inclu
     }
     if (v10cfg.rankInInject) out = out.slice().sort((x, y) => (y.activation || 0) - (x.activation || 0));
   }
-  const rowsOut = out.slice(0, Math.max(1, Number(limit) || 5));
-  // 只有调用方显式声明「这次要注入/真正用到」时才记账：CLI、MCP、影子对比默认不写。
+  const rowsOut = out.slice(0, limitN);
+  // 只有调用方显式声明「这次是要注入/被真正用到」时才记账：
+  // CLI recall、MCP 工具、影子对比脚本默认不写，避免把人工查看和离线分析算成「被想起」。
   if (recordOpt === true && v10cfg.enabled && v10cfg.recordRetrieved) {
     recordRetrieved(rowsOut, { dir, now, by: recordBy });
   }
@@ -529,7 +830,8 @@ function recordRetrieved(rows, { dir = '', now = Date.now(), by = 'search' } = {
     const last = Number(r.lastRetrievedAt) || 0;
     if (last && sameLocalDay(last, now)) continue;
     try {
-      // 带上这次命中里线索触发（cue）的分值，便于回看「为什么想起」
+      // 带上这次命中里线索触发（cue）的分值，便于回看「为什么想起」；
+      // 没有算过激活值（v10 关闭 / 直接调用）时记 0，不影响旧数据。
       const cue = Number(r.activationParts && r.activationParts.cue) || 0;
       lt.appendEvent({ ev: 'retrieved', id: r.id, at: now, by, cue }, dir);
       r.lastRetrievedAt = now;
@@ -541,15 +843,19 @@ function recordRetrieved(rows, { dir = '', now = Date.now(), by = 'search' } = {
   }
 }
 
-/** 只给「真正被用到」的调用方：声明这批行确实进了注入（引擎在过滤卡重复之后调用）。 */
+/**
+ * 只给「真正被用到」的调用方：声明这批行确实进了注入。
+ * 引擎在过滤掉卡里已有的条目之后再调用，保证记的是最终展示的那几条。
+ */
 export function markRetrieved(rows, { dir = '', now = Date.now(), by = 'inject' } = {}) {
   const cfg = loadV10(dir);
   if (cfg.enabled !== true || cfg.recordRetrieved !== true) return 0;
+  const before = rows.filter((r) => r && r.id && !(Number(r.lastRetrievedAt) > 0 && sameLocalDay(Number(r.lastRetrievedAt), now))).length;
   recordRetrieved(rows, { dir, now, by });
-  return 0;
+  return before;
 }
 
-/** CLI/HTTP：一条事实的 v10 解释（计算统一交给 v10.explain）。 */
+/** CLI/HTTP：一条事实的 v10 解释（不走检索也能看；计算统一交给 v10.explain）。 */
 export function explainFact(fact, { query = '', facts = [], dir = '', now = Date.now() } = {}) {
   const cfg = loadV10(dir);
   const ex = v10Explain(fact, { query, facts, now, cfg });
