@@ -30,7 +30,7 @@ function head(text = '', n = 80) {
   return s.length > n ? `${s.slice(0, n)}…` : s;
 }
 
-function dayOf(iso) {
+export function dayOf(iso) {
   const t = Date.parse(iso);
   if (!Number.isFinite(t)) return '';
   const d = new Date(t);
@@ -233,6 +233,67 @@ export function buildEpisodesForDay(dir, { day, sessionId = '', fidelity = '' } 
     }
   }
   return { episodes, turns };
+}
+
+/**
+ * 日终建段：把最近几天的窗口账本折叠成 episode（幂等）。
+ *
+ * 2026-11-04 体检发现的断档：日终只调 `summarizePendingEpisodes`（只处理已存在的段），
+ * 而建段只在 `scripts/build-episodes.mjs` 里手动调用 —— 于是从当天起 episode 与
+ * entry 两条链都空转。日终必须先建段，再摘要、再抽 entry。
+ *
+ * @param {string} dir 数据目录
+ * @param {{now?: number, days?: number}} opts days 默认 2（今天 + 昨天；昨天的尾巴在
+ *   第二天建段时补齐）
+ * @returns {{added:number, updated:number, segments:number, days:string[]}}
+ */
+export function buildDailyEpisodes(dir, { now = Date.now(), days = 2 } = {}) {
+  if (!dir) return { added: 0, updated: 0, segments: 0, days: [] };
+  const wanted = [];
+  const span = Math.max(1, Math.min(7, Number(days) || 2));
+  for (let i = 0; i < span; i += 1) {
+    const d = dayOf(new Date(now - i * 86400000).toISOString());
+    if (d) wanted.push(d);
+  }
+  const existing = new Map(readEpisodes(dir).map((e) => [e.id, e]));
+  let added = 0;
+  let updated = 0;
+  let segments = 0;
+  for (const day of wanted) {
+    let built;
+    try {
+      built = buildEpisodesForDay(dir, { day });
+    } catch {
+      continue;
+    }
+    segments += built.episodes.length;
+    const fresh = [];
+    for (const ep of built.episodes) {
+      const old = existing.get(ep.id);
+      if (!old) {
+        fresh.push(ep);
+        added += 1;
+        continue;
+      }
+      // 同一段尾巴变长（夜里又聊了几句）：用新段覆盖，但保留旧标题/想法，
+      // 并把 summarized 置回 false，让摘要步骤重写这一段。
+      const grown = (old.turnTo || 0) !== (ep.turnTo || 0) || (old.turns || []).length !== (ep.turns || []).length;
+      if (!grown) continue;
+      fresh.push({
+        ...old,
+        ...ep,
+        title: old.title || ep.title,
+        scene: old.scene || ep.scene,
+        topics: Array.isArray(old.topics) && old.topics.length ? old.topics : ep.topics,
+        thoughts: Array.isArray(old.thoughts) && old.thoughts.length ? old.thoughts : ep.thoughts,
+        summarized: false,
+        updatedAt: new Date().toISOString()
+      });
+      updated += 1;
+    }
+    if (fresh.length) upsertEpisodes(dir, fresh);
+  }
+  return { added, updated, segments, days: wanted };
 }
 
 /** 给 episode 挂上模型补写的摘要字段（标题/场景/主题/想法），只覆盖非空项。 */

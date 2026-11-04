@@ -1,4 +1,4 @@
-﻿// 从情境段（episode）里抽 entry（记忆 3.0 P2/P3 的「模型主力抽取」）。
+// 从情境段（episode）里抽 entry（记忆 3.0 P2/P3 的「模型主力抽取」）。
 //
 // 与 extract-model.mjs 的区别：
 // - 输入是**情境段**（一段连续对话 + 它当时的摘要），不是一天里散落的消息；
@@ -315,6 +315,13 @@ export async function extractIntoStore(dir, episodes, { write = false, request =
                 quote: entry.quote.slice(0, 200),
                 label: SLOT_LABEL[entry.slot] || entry.slot,
                 source: { model: 'episode', episodeId: ep.id, confidence: entry.confidence },
+                // 时间锚跟着新那一句走：否则新值会顶着旧值的过期日期，卡上「旧事」串行。
+                saidAt: fact.saidAt,
+                dates: fact.dates,
+                validUntil: fact.validUntil,
+                timePhrase: fact.timePhrase,
+                timeConfidence: fact.timeConfidence,
+                ...(fact.birthday ? { birthday: fact.birthday } : {}),
                 at: Date.now()
               },
               dir

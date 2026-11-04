@@ -1,6 +1,6 @@
 {
   "name": "deepseek-memory-ido1um",
-  "version": "3.0.0-beta.2",
+  "version": "3.0.0",
   "private": true,
   "type": "module",
   "description": "可审计、会遗忘、能轮转的长期记忆引擎（窗口账本 / 情境段 / 主题树事实卡 / 写入门 / 分层检索）",

@@ -3,6 +3,24 @@
 版本号约定：主版本 = 记忆算法/数据模型变更；次版本 = 向后兼容的新能力；修订号 = 修复与文案。
 历史版本（1.0–2.1.1）见仓库 Releases 页。
 
+## 3.0.0 — 2026-11-04
+
+首个正式版。相对 3.0.0-beta.2，修掉三处会让记忆「停在旧账上」的断档；数据格式不变，beta 库直接可用。
+
+### 修复
+
+- **日终不建段**：日终维护原来只摘要「已经存在的段」，从不把当天的窗口账本折叠成段，于是 `episodes/` 停在前一天、条目抽取无段可抽。现在 `src/episode.mjs` 提供 `buildDailyEpisodes(dir, { now, days = 2 })`，按今天和昨天建段（同 id 尾巴变长就合并、`summarized` 重置），`engine.runDailyMaintenance` 在摘要之前调用（`memory.episode.build`，默认开）；条目抽取的日期范围从「只今天」放宽到「今天或昨天」，补上跨夜的尾巴。
+- **过期态没派生到卡面**：出卡走的是长期库索引，而索引的 `facts()` 不算 `expired`，于是过期事实仍挂在「现在」区。现在 `createIndex` 内置 `deriveTime()`，每次 `facts()` 都按 `saidAt / validUntil` 现算 `at` 与 `expired`（不缓存，跨天不会错）。
+- **改口事件不带时间**：条目抽取产生的 `supersede` 事件原来没有时间字段，新值会顶着旧值的 `validUntil`（旧日期的事被当成今天说的）。现在 `supersede` 带上 `saidAt / dates / validUntil / timePhrase / timeConfidence / birthday`，`longterm` 的 supersede 分支接收这些字段；存量数据用 `scripts/repair-saidat.mjs` 按引文所在轮次重算。
+
+### 新增
+
+- `scripts/rebuild-card.mjs`：按修好的索引重建 `profile.md`（写前备份，打印字数/收录/挤出/主题数）。
+
+### 测试
+
+- 386 个用例（新增 5 个：日终建段 2、索引派生 2、supersede 时间锚 1），验收自检 15 项、沙箱自检 26 项全部通过。
+
 ## 3.0.0-beta.2 — 2026-11-04
 
 Beta 2 只做一件事：**把事实的时间放回它被说出口的那一刻**，并让生日成为可查询的日期字段。不改变已有数据格式，老库可直接用。

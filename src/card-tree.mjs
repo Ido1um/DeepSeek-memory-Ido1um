@@ -20,6 +20,16 @@ import { toEntries, selectSingle, pruneCrossSlot, capEntries, capEvents, entityO
 
 export const TREE_HEADER = '【长期记忆（事实卡）】';
 
+// 旧事行里每条值最多 40 字，尽量在标点处收口，别把一句话切成半个词。
+function clipOldValue(text, max) {
+  const s = String(text || '');
+  if (s.length <= max) return s;
+  const cut = s.slice(0, max);
+  const p = Math.max(cut.lastIndexOf('，'), cut.lastIndexOf('；'), cut.lastIndexOf('。'), cut.lastIndexOf('、'), cut.lastIndexOf(' '));
+  const body = p >= 12 ? cut.slice(0, p) : cut;
+  return body + '…';
+}
+
 const TIER_RANK = { hard: 3, long: 2, general: 1, temp: 0 };
 
 // 多值槽位默认封顶；mentionsPerSlot 只作为统一下限/上限兜底。
@@ -271,7 +281,7 @@ export function buildTreeCard(facts = [], rawCfg = {}, topics = []) {
         const clean = cleanValue(f.value, { slot: 'event' }) || '';
         if (!clean) return '';
         const date = f?.dates?.[0]?.date || (f.saidAt ? new Date(Number(f.saidAt) + 8 * 3600e3).toISOString().slice(5, 10) : '');
-        const val = clean.length > 26 ? clean.slice(0, 25) + '…' : clean;
+        const val = clipOldValue(clean, 40);
         return date ? `${date.slice(5)} ${val}` : val;
       }).filter(Boolean);
       if (!parts.length) continue;

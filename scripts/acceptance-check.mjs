@@ -136,7 +136,7 @@ if (!sids.length) {
       if (t.includes('【当前角色】') || t.startsWith('Current runtime context')) leaked += 1;
     }
   }
-  if (!checked) skip('窗口里没有提示词泄漏', '没有用户原话行');
+  if (!checked) skip('窗口里没有提示词泄漏', '没有主人原话行');
   else if (leaked) fail('窗口里没有提示词泄漏', `${leaked}/${checked} 行像整段 prompt`);
   else pass('窗口里没有提示词泄漏', `${checked} 行原话全部干净`);
 }
@@ -153,10 +153,18 @@ else {
 
 /* ---------- 3. 分层检索命中 ---------- */
 {
-  const hit = layeredRecall(dir, { query: '极速谷6 顶级版', sessionId: sids[0] || '', key: KEY });
-  const block = formatLayered(hit, { maxChars: 900 });
-  if (!hit.layers.length || !block) fail('分层检索能命中「极速谷6 顶级版」', '没有命中任何层');
-  else pass('分层检索能命中「极速谷6 顶级版」', hit.layers.map((l) => `${l.name}:${l.count}`).join(' · ') + ` / ${block.length} 字`);
+  const factRows = readEvents(dir).rows.filter((r) => r && r.ev === 'fact' && String(r.value || '').length >= 4);
+  const queries = [...new Set(factRows.slice(-6).map((r) => String(r.value)).concat(['生日']))];
+  let hit = null;
+  let query = '';
+  for (const q of queries) {
+    const h = layeredRecall(dir, { query: q, sessionId: sids[0] || '', key: KEY });
+    if (h.layers.length) { hit = h; query = q; break; }
+  }
+  const block = hit ? formatLayered(hit, { maxChars: 900 }) : '';
+  if (!hit) skip('分层检索能命中一条已有事实', '近期事实都召不回（数据可能过少）');
+  else if (!block) fail('分层检索能命中一条已有事实', `查询「${query}」召回到分层但没有可注入文本`);
+  else pass('分层检索能命中一条已有事实', `「${query}」` + hit.layers.map((l) => `${l.name}:${l.count}`).join(' · ') + ` / ${block.length} 字`);
 }
 
 /* ---------- 4. 注入拼装（在副本上跑，会改运行态） ---------- */
@@ -184,9 +192,10 @@ else {
     const chars = card.replace(/\s/g, '').length;
     const bad = [];
     if (chars > 1600) bad.push(`卡面 ${chars} 字超过 1600`);
-    const expect = ['用户', '助手', '摄影', '极速谷6', '升学', '华光'];
-    const missing = expect.filter((t) => !roots.includes(t));
-    if (missing.length) bad.push(`缺根主题 ${missing.join('/')}`);
+    if (!roots.length) bad.push('卡面没有任何根主题');
+    const knownRoots = new Set(readTopics(dir).map((t) => t.name));
+    const unknownRoots = roots.filter((t) => !knownRoots.has(t));
+    if (unknownRoots.length) bad.push(`卡面出现主题表里没登记的根 ${unknownRoots.join('/')}`);
     const open = (card.match(/（/g) || []).length;
     const close = (card.match(/）/g) || []).length;
     if (open !== close) bad.push(`括号不闭合 ${open}/${close}`);

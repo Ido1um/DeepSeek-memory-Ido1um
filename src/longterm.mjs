@@ -1,4 +1,4 @@
-﻿// 长期记忆落盘（v7 §6）：事件流 + 折叠。
+// 长期记忆落盘（v7 §6）：事件流 + 折叠。
 //
 // 为什么用「事件流」而不是「一条事实一行、原地改」：
 // 1) 只追加，不重写历史，写失败最多丢最后一行；
@@ -376,6 +376,13 @@ function applyEvent(map, ev) {
     if (ev.quote) cur.quote = ev.quote;
     if (ev.label) cur.label = ev.label;
     if (ev.source && typeof ev.source === 'object') cur.source = ev.source;
+    // 新值可能带着新的时间锚（「今晚」换成另一晚）——跟着一起换，别让新值顶着旧有效期。
+    if (Number(ev.saidAt)) cur.saidAt = Number(ev.saidAt);
+    if (Array.isArray(ev.dates)) cur.dates = ev.dates.slice(0, 4);
+    if (ev.validUntil !== undefined) cur.validUntil = Number(ev.validUntil) || 0;
+    if (ev.timePhrase !== undefined) cur.timePhrase = ev.timePhrase || '';
+    if (ev.timeConfidence !== undefined) cur.timeConfidence = Number(ev.timeConfidence) || 0;
+    if (ev.birthday && typeof ev.birthday === 'object') cur.birthday = ev.birthday;
     cur.versions = (Number(cur.versions) || 1) + 1;
     cur.supersededAt = toMs(ev.at) || Date.now();
     cur.lastAt = toMs(ev.at) || cur.lastAt;
@@ -573,6 +580,24 @@ function createIndex(dir) {
     cached = null;
   }
 
+  /**
+   * 读时派生时间字段（与 materialize 保持一致）：
+   * - at：那句话被说出的时间（saidAt），没有才退回 createdAt / lastAt；
+   * - expired：validUntil 已过（按当前时间算，每次读都重算，不缓存）。
+   *
+   * 为什么不写进事件里：过期是「相对现在」的状态，写死就会在第二天变错；
+   * 为什么不只在 materialize 里算：卡面/检索走的是这个索引，漏了就会出现
+   * 「已过期的事实还挂在现在区、检索也不标旧事」——2026-11-04 日终体检发现。
+   */
+  function deriveTime(out) {
+    const now = Date.now();
+    for (const f of out) {
+      const said = Number(f.saidAt) || 0;
+      f.at = said || Number(f.createdAt) || Number(f.lastAt) || 0;
+      f.expired = Boolean(f.validUntil) && isExpired(f.validUntil, now);
+    }
+  }
+
   function facts() {
     sync();
     loadInvalidated();
@@ -586,6 +611,7 @@ function createIndex(dir) {
       }
       cached = out.sort((a, b) => b.lastAt - a.lastAt);
     }
+    deriveTime(cached);
     return cached;
   }
 

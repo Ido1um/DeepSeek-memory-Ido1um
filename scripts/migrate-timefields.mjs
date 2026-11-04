@@ -18,7 +18,7 @@ import { readEpisodes } from '../src/episode.mjs';
 import { parseTime, isExpired } from '../src/timeparse.mjs';
 import { turnAtFor } from '../src/extract-episode.mjs';
 
-const DEFAULT_DIR = path.join(process.env.HOME || process.env.USERPROFILE || '.', '.deepseek-memory', 'data');
+const DEFAULT_DIR = process.env.QQ_MEMORY_DIR || path.join(process.env.HOME || process.env.USERPROFILE || '.', '.deepseek-memory', 'data');
 const args = process.argv.slice(2);
 const flag = (n) => args.includes(`--${n}`);
 const arg = (n, d = '') => { const i = args.indexOf(`--${n}`); return i >= 0 && args[i + 1] ? args[i + 1] : d; };
@@ -60,7 +60,7 @@ function turnAtFromSource(fact, episodes, cache) {
 
 function backup(dir) {
   const stamp = new Date().toISOString().replace(/[:.]/g, '-');
-  const dst = path.join('D:/03生产/DeepSeek shenming/backup', `timefields-${stamp}`);
+  const dst = path.join(dir, 'backup', `timefields-${stamp}`);
   fs.mkdirSync(dst, { recursive: true });
   for (const name of ['state/longterm.jsonl', 'profile.md', 'state/memory.json']) {
     const src = path.join(dir, name);

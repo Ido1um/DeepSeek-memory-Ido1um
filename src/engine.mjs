@@ -83,7 +83,7 @@ const DEFAULTS = {
   // 路线 A：日终模型抽取（默认关，先影子观察）
   extract: extractModel.normalizeExtract({}),
   // S1：日终给 episode 补标题/场景/主题/想法（只写 episodes/，不进注入）
-  episode: { summarize: true, maxPerDay: 24, maxInputChars: 6000, timeoutMs: 40000, minAgeMs: 600000 },
+  episode: { build: true, summarize: true, maxPerDay: 24, maxInputChars: 6000, timeoutMs: 40000, minAgeMs: 600000 },
   // P3：分层检索（近 7 天情境 → 近 7 天原话 → 近 30 天情境），只注入不写库
   retrieval: { ...retrieval.RETRIEVAL_DEFAULTS },
   // 3.0 补丁：相对时间解析（enabled=false 即回旧行为：不解析、不显示旧事）
@@ -787,6 +787,23 @@ export function createMemoryEngine({
         log(`记忆抽取失败（不影响日终）：${error?.message ?? error}`);
       }
 
+      // S1：先把窗口账本建成情境段（幂等），否则摘要与 entry 抽取都无段可做。
+      // 2026-11-04 体检发现的断档：建段只在 scripts/build-episodes.mjs 手动跑，
+      // 日终从不建段 → episode/entry 链从当天起空转。
+      let episodeBuild = null;
+      try {
+        if (c.episode?.build !== false) {
+          episodeBuild = episodeMod.buildDailyEpisodes(dataDir(), { now, days: 2 });
+          if (episodeBuild.added || episodeBuild.updated) {
+            log(
+              `情境段：建段完成（新增 ${episodeBuild.added} 段，补尾巴 ${episodeBuild.updated} 段，覆盖 ${episodeBuild.segments} 段）`
+            );
+          }
+        }
+      } catch (error) {
+        log(`情境段构建失败（不影响日终）：${error?.message ?? error}`);
+      }
+
       // S1：给还没摘要的 episode 补标题/场景/主题/想法。只写 episodes/，不碰注入与卡。
       let episodeSummary = null;
       try {
@@ -805,9 +822,12 @@ export function createMemoryEngine({
       let entryExtractResult = null;
       try {
         if (c.entryExtract?.enabled === true) {
+          // 覆盖今天与昨天：今天的段可能还没结束（夜里再补尾巴），昨天是完整日。
+          // 同为单值槽位走 supersede、多值按 sig 去重，重复抽不会重复写。
+          const yday = episodeMod.dayOf(new Date(now - 86400000).toISOString());
           const dayEpisodes = episodeMod
             .readEpisodes(dataDir())
-            .filter((e) => e.day === bounds.today)
+            .filter((e) => e.day === bounds.today || (yday && e.day === yday))
             .slice(-Math.max(1, Number(c.entryExtract.maxPerDay) || 12));
           if (dayEpisodes.length) {
             entryExtractResult = await entryExtract.extractIntoStore(dataDir(), dayEpisodes, { write: true, log });
@@ -930,7 +950,7 @@ export function createMemoryEngine({
       }
       log(`7 天记忆·日终：${bounds.today} 已归档 ${archived} 个文件（保留 ${bounds.windowDays} 天：${bounds.startDay} 起），下次日终标记 ${new Date(doneAt).toISOString()}`);
       for (const key of listSessions()) void rotate(key, { reason: 'daily' });
-      return { ok: true, today: bounds.today, windowStart: bounds.startDay, archived, profile, scoring, toneSummary, extract, episodeSummary, entryExtract: entryExtractResult, reconcile };
+      return { ok: true, today: bounds.today, windowStart: bounds.startDay, archived, profile, scoring, toneSummary, extract, episodeBuild, episodeSummary, entryExtract: entryExtractResult, reconcile };
     } catch (error) {
       log(`7 天记忆·日终日维护失败：${error?.message ?? error}`);
       return { ok: false, error: String(error?.message ?? error) };

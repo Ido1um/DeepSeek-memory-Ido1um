@@ -22,6 +22,7 @@ const PLACEHOLDER_IDS = new Set(['10001', '10002', '20002', '123456']);
 const RULES = [
   { name: 'Windows 用户目录', re: /[A-Za-z]:\\Users\\[^\\\s"']+/i },
   { name: '本机工作盘路径', re: /[A-Za-z]:\\(?:work|projects?|dev|code|src)\\[^\s"']+/i },
+  { name: '本机绝对路径（正斜杠写法）', re: /[A-Za-z]:\/(?:work program|03生产|Users\/[^\/\s"']+)/i },
   { name: '会话 key 里的真实账号', re: /\b(?:private|group):(\d{5,12})\b/g, allow: (m) => PLACEHOLDER_IDS.has(m[1]) },
   { name: '疑似令牌（32+ 位十六进制）', re: /\b[0-9a-f]{32,}\b/i },
   { name: '疑似 API key', re: /\bsk-[A-Za-z0-9_-]{16,}\b/ },
