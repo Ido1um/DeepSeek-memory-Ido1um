@@ -24,7 +24,8 @@ const RULES = [
   { name: '本机工作盘路径', re: /[A-Za-z]:\\(?:work|projects?|dev|code|src)\\[^\s"']+/i },
   { name: '本机绝对路径（正斜杠写法）', re: /[A-Za-z]:\/(?:work program|03生产|Users\/[^\/\s"']+)/i },
   { name: '会话 key 里的真实账号', re: /\b(?:private|group):(\d{5,12})\b/g, allow: (m) => PLACEHOLDER_IDS.has(m[1]) },
-  { name: '疑似令牌（32+ 位十六进制）', re: /\b[0-9a-f]{32,}\b/i },
+  // PNG 文件头/尾（89504e47… / …49454e44）是测试夹具里的图片字节，不是密钥
+  { name: '疑似令牌（32+ 位十六进制）', re: /\b[0-9a-f]{32,}\b/i, allow: (m) => /^(?:89504e47|0d0a2db4)/i.test(m[0]) },
   { name: '疑似 API key', re: /\bsk-[A-Za-z0-9_-]{16,}\b/ },
   { name: '凭据赋值', re: /\b(?:api[_-]?key|token|secret|password|passwd)\b\s*[:=]\s*["'][^"'\s]{8,}["']/i, allow: (m) => /process\.env|示例|your-|test-token|xxx|<.*>/i.test(m[0]) },
   { name: '私钥块', re: /-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----/ },

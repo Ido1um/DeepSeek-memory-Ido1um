@@ -16,21 +16,24 @@ export const TOPIC_VERSION = 1;
 
 /** 受控槽位词表（写入前必须命中其一；review 里可以出现自由槽位供人工确认）。 */
 export const SLOTS = [
-  'identity', 'nickname', 'birthday', 'residence', 'job', 'school', 'skill',
+  'identity', 'nickname', 'birthday', 'residence', 'job', 'school',
+  'major', 'exam', 'course', 'skill',
   'gear', 'game', 'edition', 'pref', 'pet', 'plan', 'event', 'note',
   'intel', 'stance', 'material', 'progress', 'routine', 'food', 'contact'
 ];
 
 /** 卡片投影时的排序：先人，再关系，再在做的事，最后杂项。 */
 export const SLOT_ORDER = [
-  'identity', 'nickname', 'birthday', 'residence', 'job', 'school', 'skill',
-  'gear', 'game', 'edition', 'pref', 'pet', 'food', 'routine',
+  'identity', 'nickname', 'birthday', 'residence', 'job', 'school',
+  'major', 'exam', 'course',
+  'skill', 'gear', 'game', 'edition', 'pref', 'pet', 'food', 'routine',
   'plan', 'progress', 'intel', 'material', 'stance', 'event', 'note', 'contact'
 ];
 
 export const SLOT_LABEL = {
   identity: '身份', nickname: '称呼', birthday: '生日', residence: '住处', job: '工作',
-  school: '学校', skill: '技能', gear: '器材', game: '游戏', edition: '版本', pref: '偏好',
+  school: '学校', major: '专业', exam: '考试', course: '课程',
+  skill: '技能', gear: '器材', game: '游戏', edition: '版本', pref: '偏好',
   pet: '宠物', plan: '计划', event: '事件', note: '备注', intel: '情报',
   stance: '态度', material: '资料', progress: '进度', routine: '作息', food: '口味',
   contact: '联系方式'
@@ -138,10 +141,15 @@ export function slugOf(name) {
 // 只覆盖「已经确认存在的主题」；返回 confidence，低于阈值就交给 review。
 const RULES = [
   // 学业（课业/作业/期中期末）先判：否则「华光」的学校关键词会把课业也算进考研主题
+  { topic: 't-hust', slot: 'exam', re: /初试|复试|分数线|考试科目|招\s*\d+|101|201|301|832/i },
   { topic: 't-study', slot: 'event', re: /课业|作业|实验报告|期中|期末|听写|默写|课程|卷子|交\s*dsh/i },
+  // 单条课表（周几 + 时间/教室 + 课程名）才归 course；「课程：A、B」这类拼句仍走 event
+  { topic: 't-schedule', slot: 'course', re: /^(?:周|星期)[一二三四五六日天]|教室|教学楼|早八|第\s*\d+\s*周/ },
   { topic: 't-study', slot: 'progress', re: /复习|刷题|备考|预习/i },
   { topic: 't-identity', slot: 'birthday', re: /生日|birthday/i },
   { topic: 't-identity', slot: 'nickname', re: /称呼|叫你|取名|名字|昵称/i },
+  { topic: 't-identity', slot: 'major', re: /本科.*(专业|物理)|专业是|学的是|应用物理/i },
+  { topic: 't-plan', slot: 'major', re: /考研.*(专业|计算机|电子信息)|目标.*(专业|计算机|电子信息)/i },
   { topic: 't-identity', slot: 'identity', re: /身份|本人|专业|年级|大二|大三|物理/i },
   { topic: 't-identity', slot: 'school', re: /学校|大学|示例学院|学院|录取/i },
   { topic: 't-identity', slot: 'residence', re: /住在|宿舍|老家|城市|示例城市|示例省份/i },
@@ -167,6 +175,7 @@ export const DEFAULT_TOPICS = [
   { id: 't-identity', name: '用户', aliases: ['用户', '他'] },
   { id: 't-us', name: '我们之间', aliases: ['我们', '用户和小助手', '一起'] },
   { id: 't-study', name: '学业', parentId: 't-identity', aliases: ['课业', '作业', '上课'] },
+  { id: 't-schedule', name: '课程表', parentId: 't-study', aliases: ['课表', '课程', '上课'] },
   { id: 't-photo', name: '摄影', aliases: ['摄影', '拍照', '相机'] },
   { id: 't-horizon6', name: '极速谷6', aliases: ['极速谷', 'RacingX'] },
   { id: 't-hust', name: '华光', parentId: 't-plan', aliases: ['华光', '示例大学', '081200'] },
@@ -199,6 +208,7 @@ export const SINGLE_VALUE_SLOTS = new Set([
   'residence',
   'job',
   'school',
+  'major',
   'edition',
   'game',
   'plan',

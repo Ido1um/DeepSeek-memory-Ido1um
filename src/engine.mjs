@@ -48,8 +48,10 @@ import * as windowLedger from './window.mjs';
 import * as episodeAi from './episode-ai.mjs';
 import * as episodeMod from './episode.mjs';
 import * as entryExtract from './extract-episode.mjs';
+import * as claims from './claims.mjs';
 import * as retrieval from './retrieval.mjs';
 import * as wander from './wander.mjs';
+import * as gapfill from './gapfill.mjs';
 
 const DAY_MS = 86400000;
 
@@ -787,6 +789,30 @@ export function createMemoryEngine({
         log(`记忆抽取失败（不影响日终）：${error?.message ?? error}`);
       }
 
+      // P0b（D1）：先把聊天记录里掉出窗口的用户消息补回账本（只补原话 + 她发出去的话），
+      // 再建情境段做摘要/抽取——否则缺口永远进不了记忆。
+      let gapRepair = null;
+      try {
+        if (c.window?.gapRepair !== false) {
+          gapRepair = { sessions: 0, added: 0, skipped: 0, details: [] };
+          const keys = typeof s.listSessions === 'function' ? s.listSessions() : [];
+          for (const key of keys) {
+            const info = typeof s.getSessionInfo === 'function' ? s.getSessionInfo(key) : null;
+            const sid = String(info?.sessionId || '');
+            const r = gapfill.repairGapsForKey({ dir: dataDir(), key, days: 2, now, write: true, fallbackSessionId: sid });
+            if (r.gapTurns) {
+              gapRepair.sessions += 1;
+              gapRepair.added += r.added;
+              gapRepair.skipped += r.skipped;
+              gapRepair.details.push({ key, gapTurns: r.gapTurns, added: r.added, sessions: r.sessions });
+            }
+            if (r.added) log(`窗口缺口：${key} 补写 ${r.added} 轮（聊天记录里有 ${r.gapMessages} 条原话没进窗口）`);
+          }
+        }
+      } catch (error) {
+        log(`窗口补写失败（不影响日终）：${error?.message ?? error}`);
+      }
+
       // S1：先把窗口账本建成情境段（幂等），否则摘要与 entry 抽取都无段可做。
       // 2026-11-04 体检发现的断档：建段只在 scripts/build-episodes.mjs 手动跑，
       // 日终从不建段 → episode/entry 链从当天起空转。
@@ -838,6 +864,17 @@ export function createMemoryEngine({
         }
       } catch (error) {
         log(`情境抽取失败（不影响日终）：${error?.message ?? error}`);
+      }
+
+      // P0c：她纠正过的话 → pending 候选（不直接改事实，等用户确认）
+      let claimResult = null;
+      try {
+        claimResult = claims.runDailyClaims(dataDir(), { now, cfg: c.claims, log });
+        if (claimResult?.added) {
+          log(`纠正候选：新增 ${claimResult.added} 条（pending，等用户确认）`);
+        }
+      } catch (error) {
+        log(`纠正候选失败（不影响日终）：${error?.message ?? error}`);
       }
 
       // 事实卡：write/投影模式 → 从长期库投影并备份；否则仍走模型摘要。
@@ -921,15 +958,17 @@ export function createMemoryEngine({
           try { sid = String(host.getSessionId(key) || ''); } catch { sid = ''; }
           if (!sid) continue;
           let raws = [];
+          let rawMsgs = [];
           try {
-            raws = store.recentMessages(key, 800)
+            rawMsgs = store.recentMessages(key, 800)
               .filter((m) => m && m.role === 'user' && String(m.text || '').trim() && (Number(m.time) || Date.parse(m.ts) || 0) >= startOfDay.getTime())
-              .map((m) => String(m.text));
+              .map((m) => ({ text: String(m.text), msgId: String(m.messageId || ''), at: Number(m.time) || Date.parse(m.ts) || 0 }));
+            raws = rawMsgs.map((m) => m.text);
           } catch { raws = []; }
-          const r = windowLedger.reconcileSession({ dir: dataDir(), sessionId: sid, sinceMs: startOfDay.getTime(), rawTexts: raws });
+          const r = windowLedger.reconcileSession({ dir: dataDir(), sessionId: sid, sinceMs: startOfDay.getTime(), rawTexts: raws, rawMessages: rawMsgs });
           summary.push({ key, sessionId: sid, ...r });
           lines.push(
-            `${new Date(now).toISOString()} ${key} ${sid.slice(0, 12)} turns=${r.turns} incomplete=${r.incomplete} spoken=${r.spoken} feels=${r.feels} raw=${r.rawUsers} notInRaw=${r.notInRawCount}`
+            `${new Date(now).toISOString()} ${key} ${sid.slice(0, 12)} turns=${r.turns} incomplete=${r.incomplete} spoken=${r.spoken} feels=${r.feels} raw=${r.rawUsers} notInRaw=${r.notInRawCount} rawNotInWindow=${r.rawNotInWindowCount}`
           );
         }
         if (lines.length) {
@@ -939,7 +978,8 @@ export function createMemoryEngine({
         }
         reconcile = { at: new Date(now).toISOString(), sessions: summary.length, summary };
         const mismatch = summary.reduce((a, r) => a + (Number(r.notInRawCount) || 0), 0);
-        log(`窗口对账：${summary.length} 个会话，对不上 ${mismatch} 条${mismatch ? '（见 logs/window-reconcile.log）' : ''}`);
+        const gapCount = summary.reduce((a, r) => a + (Number(r.rawNotInWindowCount) || 0), 0);
+        log(`窗口对账：${summary.length} 个会话，对不上 ${mismatch} 条，缺口 ${gapCount} 条${mismatch || gapCount ? '（见 logs/window-reconcile.log）' : ''}`);
       } catch (error) {
         log(`窗口对账失败（不影响日终）：${error?.message ?? error}`);
       }
@@ -950,7 +990,7 @@ export function createMemoryEngine({
       }
       log(`7 天记忆·日终：${bounds.today} 已归档 ${archived} 个文件（保留 ${bounds.windowDays} 天：${bounds.startDay} 起），下次日终标记 ${new Date(doneAt).toISOString()}`);
       for (const key of listSessions()) void rotate(key, { reason: 'daily' });
-      return { ok: true, today: bounds.today, windowStart: bounds.startDay, archived, profile, scoring, toneSummary, extract, episodeBuild, episodeSummary, entryExtract: entryExtractResult, reconcile };
+      return { ok: true, today: bounds.today, windowStart: bounds.startDay, archived, profile, scoring, toneSummary, extract, gapRepair, episodeBuild, episodeSummary, entryExtract: entryExtractResult, claims: claimResult, reconcile };
     } catch (error) {
       log(`7 天记忆·日终日维护失败：${error?.message ?? error}`);
       return { ok: false, error: String(error?.message ?? error) };

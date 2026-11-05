@@ -16,6 +16,7 @@
 // - 没有挂主题的事实按老方式兜底进「其他」，不丢；
 // - 超预算时从最低优先级的主题整块丢弃，末行注明「（其余条目已省略）」。
 import { SLOT_ORDER, SLOT_LABEL, SINGLE_VALUE_SLOTS, groupByTopic, rootOf } from './topics.mjs';
+import { PARITY_LABEL, WEEK_LABEL } from './schedule.mjs';
 import { toEntries, selectSingle, pruneCrossSlot, capEntries, capEvents, entityOf, cleanValue } from './card-hygiene.mjs';
 
 export const TREE_HEADER = '【长期记忆（事实卡）】';
@@ -99,6 +100,19 @@ function slotRank(slot) {
   return i < 0 ? 99 : i;
 }
 
+// 课程表按结构化字段渲染，避免卡里出现「周五早八…」这种没法算日期的自由文本。
+function courseValueOf(f) {
+  const c = f.course && typeof f.course === 'object' ? f.course : null;
+  if (!c || !Array.isArray(WEEK_LABEL)) return f.value || f.text || '';
+  const day = WEEK_LABEL[Number(c.day)];
+  if (!day) return f.value || f.text || '';
+  const time = c.start ? `${c.start}${c.end ? `–${c.end}` : ''}` : '';
+  const parity = c.parity && c.parity !== 'all' ? `（${PARITY_LABEL[c.parity] || c.parity}）` : '';
+  const loc = c.location ? ` · ${c.location}` : '';
+  const name = c.name || String(f.value || '').split(/[：:]/)[0] || '课程';
+  return `${name}：${day}${time ? ` ${time}` : ''}${parity}${loc}`;
+}
+
 /** 把一个主题下的事实按槽位收成 entry 列表，并做跨槽位去重。 */
 function slotEntriesOf(topicFacts) {
   const bySlot = new Map();
@@ -108,7 +122,10 @@ function slotEntriesOf(topicFacts) {
     bySlot.get(slot).push(f);
   }
   const raw = {};
-  for (const [slot, list] of bySlot) raw[slot] = toEntries(list.map((f) => f.value || f.text), list, { slot });
+  for (const [slot, list] of bySlot) {
+    const vals = list.map((f) => (slot === 'course' ? courseValueOf(f) : (f.value || f.text)));
+    raw[slot] = toEntries(vals, list, { slot });
+  }
   return pruneCrossSlot(raw);
 }
 
@@ -255,12 +272,13 @@ export function buildTreeCard(facts = [], rawCfg = {}, topics = []) {
     for (const child of children) {
       const r = renderTopic(child, cfg.subLineChars, 6);
       if (!r.items.length) continue;
-      const head = { text: `  【${String(child.topic?.name || child.topicId).slice(0, 12)}】`, entries: [] };
-      childHeads.push(head, { text: '  ' + r.items[0].text, entries: r.items[0].entries });
+      // 标题和第一行绑成一个 item：预算只够一行时，不能只剩一个空【华光】标题。
+      const headText = `  【${String(child.topic?.name || child.topicId).slice(0, 12)}】\n  ${r.items[0].text}`;
+      childHeads.push({ text: headText, entries: r.items[0].entries });
       childRest.push(...r.items.slice(1).map((it) => ({ text: '  ' + it.text, entries: it.entries })));
     }
-    // 子主题先给「标题 + 第一行」，保证【华光】【学业】这类子树至少露头
-    const items = [...own.slice(0, 2), ...childHeads, ...own.slice(2), ...childRest];
+    // 子主题排在前面：预算被切成一两行时，【华光】【学业】这类子树也不会整段消失。
+    const items = [...childHeads, ...own, ...childRest];
     if (!items.length) continue;
     plans.push({ root: item.root, rootName, items, rootId: item.root.id });
   }
@@ -293,6 +311,14 @@ export function buildTreeCard(facts = [], rawCfg = {}, topics = []) {
   const lineLen = (p, i) => p.items[i].text.length + 1;
   let need = 0;
   for (const p of plans) need += Math.min(blockLen(p, 1), lineLen(p, 0) + p.rootName.length + 4);
+  // 给「旧事」行预留位置：它们排在每个主题末尾，预算被第一遍的分额吃光时会被挤掉。
+  let oldReserve = 0;
+  for (const p of plans) {
+    const oldIndex = p.items.findIndex((i) => i.old);
+    if (oldIndex < 0) continue;
+    oldReserve += blockLen(p, oldIndex + 1) - blockLen(p, oldIndex) + 1;
+  }
+  need += Math.min(oldReserve, Math.max(0, Math.floor(budget * 0.2)));
   let remaining = Math.max(0, budget - need);
   const weightOf = (p) => {
     const facts = p.items.flatMap((i) => i.entries.map((e) => e.fact));

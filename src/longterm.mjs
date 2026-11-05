@@ -20,6 +20,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import * as store from './store.mjs';
 import { isExpired, parseBirthday, birthdayWho } from './timeparse.mjs';
+import { normalizeEntities } from './entities.mjs';
 
 export const LONGTTERM = 'longterm.jsonl';
 export const SHADOW = 'scoring-shadow.jsonl';
@@ -236,6 +237,16 @@ function applyEvent(map, ev) {
       topicId: String(ev.topicId || ''),
       slot: String(ev.slot || ''),
       class: ev.class || 'note',
+      // 3.1：作者与口气（'self' = 她自己写的；'correction' = 用户确认过的纠正；'extract' / 缺省 = 抽取器写的）
+      author: ev.author === 'self' || ev.author === 'correction' ? ev.author : 'extract',
+      voice: ev.voice === 'first' ? 'first' : 'third',
+      // 3.1：情报按 program 拆条（考试科目/专业代码），可选字段
+      program: String(ev.program || ''),
+      subjects: Array.isArray(ev.subjects) ? ev.subjects.slice(0, 6) : [],
+      // 3.1：轻量实体（人/机构/地名），可选字段；缺省 null 不影响旧读方
+      entities: normalizeEntities(ev.entities),
+      // 3.1 P6：课表结构化字段（day/start/parity/weeks/location/semester），可选
+      course: ev.course && typeof ev.course === 'object' ? ev.course : null,
       // v11：置信度与私密标记（老事件缺字段 → 按档推导 / false，不迁移）
       conf: Number.isFinite(Number(ev.conf)) ? Math.max(0, Math.min(1, Number(ev.conf))) : confOfTier(ev.tier),
       private: ev.private === true,
@@ -367,6 +378,13 @@ function applyEvent(map, ev) {
     if (ev.legacyRelative !== undefined) cur.legacyRelative = ev.legacyRelative === true;
     // 3.0 补丁：生日结构化字段（{y,m,d,key,yearly,who}），迁移与后续修订都是追加式。
     if (ev.birthday !== undefined) cur.birthday = ev.birthday && ev.birthday.key ? ev.birthday : null;
+    // 3.1：自写事实的归属（追加式；她重写/迁移时也能补挂）
+    if (ev.author === 'self' || ev.author === 'extract' || ev.author === 'correction') cur.author = ev.author;
+    if (ev.voice === 'first' || ev.voice === 'third') cur.voice = ev.voice;
+    if (ev.entities !== undefined) cur.entities = normalizeEntities(ev.entities);
+    if (ev.course !== undefined) cur.course = ev.course && typeof ev.course === 'object' ? ev.course : null;
+    if (ev.program !== undefined) cur.program = String(ev.program || '');
+    if (Array.isArray(ev.subjects)) cur.subjects = ev.subjects.slice(0, 6);
     if (`${cur.dueAt}|${cur.due}` !== dueBefore) cur.notifiedAt = 0;
     cur.updatedAt = toMs(ev.at) || Date.now();
   } else if (ev.ev === 'notified') {
@@ -383,10 +401,35 @@ function applyEvent(map, ev) {
     if (ev.timePhrase !== undefined) cur.timePhrase = ev.timePhrase || '';
     if (ev.timeConfidence !== undefined) cur.timeConfidence = Number(ev.timeConfidence) || 0;
     if (ev.birthday && typeof ev.birthday === 'object') cur.birthday = ev.birthday;
+    // 3.1：她自己重写时，作者与口气跟着换（被抽取器覆盖的旧值保留在事件流里）
+    if (ev.author === 'self' || ev.author === 'extract' || ev.author === 'correction') cur.author = ev.author;
+    if (ev.voice === 'first' || ev.voice === 'third') cur.voice = ev.voice;
+    if (ev.program !== undefined) cur.program = String(ev.program || '');
+    if (Array.isArray(ev.subjects)) cur.subjects = ev.subjects.slice(0, 6);
+    if (ev.entities !== undefined) cur.entities = normalizeEntities(ev.entities);
+    if (ev.course !== undefined) cur.course = ev.course && typeof ev.course === 'object' ? ev.course : null;
     cur.versions = (Number(cur.versions) || 1) + 1;
     cur.supersededAt = toMs(ev.at) || Date.now();
     cur.lastAt = toMs(ev.at) || cur.lastAt;
     if (cur.status === 'expired') cur.status = 'active';
+  } else if (ev.ev === 'revise') {
+    // 3.1 P7：人工/她自己修订。值改了，但历史留在事件流与 logs/fact-history.jsonl。
+    if (ev.value !== undefined) cur.value = String(ev.value || '');
+    if (ev.text !== undefined) cur.text = String(ev.text || '');
+    if (ev.quote !== undefined) cur.quote = String(ev.quote || '');
+    if (ev.validUntil !== undefined) cur.validUntil = Number(ev.validUntil) || 0;
+    if (ev.dates !== undefined) cur.dates = Array.isArray(ev.dates) ? ev.dates.slice(0, 4) : [];
+    if (ev.timePhrase !== undefined) cur.timePhrase = String(ev.timePhrase || '');
+    if (ev.timeConfidence !== undefined) cur.timeConfidence = Number(ev.timeConfidence) || 0;
+    if (ev.course !== undefined) cur.course = ev.course && typeof ev.course === 'object' ? ev.course : null;
+    if (ev.birthday !== undefined) cur.birthday = ev.birthday && ev.birthday.key ? ev.birthday : null;
+    if (ev.entities !== undefined) cur.entities = normalizeEntities(ev.entities);
+    if (ev.program !== undefined) cur.program = String(ev.program || '');
+    if (Array.isArray(ev.subjects)) cur.subjects = ev.subjects.slice(0, 6);
+    cur.versions = (Number(cur.versions) || 1) + 1;
+    cur.revisedAt = toMs(ev.at) || Date.now();
+    cur.revisedBy = ev.by === 'self' ? 'self' : 'owner';
+    cur.reason = String(ev.reason || cur.reason || '');
   } else if (ev.ev === 'feel') {
     const feel = String(ev.feel || '').trim().slice(0, 40);
     if (cur && feel) {

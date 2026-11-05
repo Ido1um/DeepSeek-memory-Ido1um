@@ -85,10 +85,11 @@ test('classifyFact：课业优先归学业，不被华光/学校关键词抢走'
     { topicId: 't-study', slot: 'event' }
   );
   assert.equal(classifyFact({ value: '华光 081200 拟招 30 人，初试 300' }).topicId, 't-hust');
-  assert.equal(classifyFact({ value: '华光 081200 拟招 30 人，初试 300' }).slot, 'intel');
+  assert.equal(classifyFact({ value: '华光 081200 拟招 30 人，初试 300' }).slot, 'exam');
   assert.equal(classifyFact({ value: '买的是顶级版，预购冲的' }).slot, 'edition');
   assert.equal(classifyFact({ value: '买的是顶级版，预购冲的' }).topicId, 't-horizon6');
   assert.equal(classifyFact({ value: '最喜欢原厂示例车厂 GT9RS' }).topicId, 't-horizon6');
+  assert.equal(classifyFact({ value: '周五早八示例基础课，在示例楼A507' }).slot, 'course');
   assert.equal(classifyFact({ value: '' }).topicId, '');
 });
 

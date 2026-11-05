@@ -14,8 +14,9 @@ import { memorySection } from './config.mjs';
 import { memoryStats, searchMessages, windowBounds } from './store.mjs';
 import { materializeWithShadow } from './longterm.mjs';
 import { normalizeScoring, search as searchFacts } from './scoring-runner.mjs';
-
-const TIER_LABEL = { hard: '硬事实', long: '长期', general: '一般', temp: '临时' };
+import { diagnoseRecall, emptyRecallText, episodeIndex, explainRoute, formatRecallBody } from './recall-format.mjs';
+import { dayHintOf, dayKey, isScheduleQuery, scheduleAnswer } from './schedule.mjs';
+import { dataDir } from './store.mjs';
 
 const server = new McpServer({ name: 'deepseek-memory', version: '0.1.0' });
 
@@ -74,8 +75,9 @@ server.tool(
     '什么时候用：要回答「我以前说过什么」「你记不记得我…」；回答关于用户偏好/约定/生日的问题之前。',
     '每条事实若带「└ 我当时：…」就是**你当时的感受原话**，可以引用、不要改写；没带体感的会附「└ 原话：…」给你上下文。',
     '和 qq_memory_search 的分工：这个是**提炼过的事实**，那个是**聊天原文**。事实不够再翻原文。',
-    'query 留空 = 按档位列最前面的几条；带 query = 先按逐字命中找，找不到再按词相关兜底（标题会写明是哪种）。',
-    'query 可以直接用你平时说话的整句，例如「我生日是什么时候」「用户怎么称呼我」，不必只传关键词。',
+    'query 留空 = 按档位列最前面的几条；带 query = 按「槽位/主题/主体/词法」综合排序（整句话问也行，比如「我生日是什么时候」）。',
+    '每条带 ⟵ 窗口 … 轮 … 的，说明能对到当时那一轮，可以用 qq_memory_window(sessionId, turnFrom, turnTo) 展开原话；标〔自己写的〕是你自己写进库的事实。',
+    '查不到时不会只回「没有」：会告诉你我按哪一路找的、有没有相关但已过期的、有没有只是词面相近的，以及下一步怎么找（换说法 / qq_memory_search / qq_memory_window）。',
     '被作废的事实默认不返回；确有必要看墓碑时传 includeInvalidated=true。'
   ].join('\n'),
   {
@@ -89,52 +91,39 @@ server.tool(
       const scoring = normalizeScoring(memorySection()?.scoring || {});
       const facts = materializeWithShadow();
       const wantN = Math.max(1, Math.min(20, Number(limit) || 8));
-      let rows = searchFacts({
+      const dir = dataDir();
+      const qtext = String(query || '');
+      // 3.1 P6：课表问句先走结构化解析（周几/周次/单双周），事实行只作补充。
+      let schedBlock = '';
+      if (qtext && isScheduleQuery(qtext)) {
+        const day = dayHintOf(qtext, now) || dayKey(now);
+        schedBlock = scheduleAnswer(dir, day, { facts }).text;
+      }
+      // 3.1：默认走 smart（词法 + 槽位/主题/主体路由）。她平时用整句话问，
+      // 逐字匹配必然 0 条；smart 让「我生日是什么时候」也能落到 birthday 槽位。
+      const rows = searchFacts({
         query: query || '',
         limit: wantN,
         now,
         scoring,
         includeInvalidated: Boolean(includeInvalidated),
-        facts
+        facts,
+        match: 'smart'
       });
-      // 她平时是用整句话问的（「我生日是什么时候」），逐字匹配必然 0 条。
-      // 这时退一步按词相关找，并在标题里说清楚「不是逐字命中」，不冒充精确答案。
-      let fuzzy = false;
-      if (!rows.length && String(query || '').trim()) {
-        rows = searchFacts({
-          query: String(query).trim(),
-          limit: wantN,
-          now,
-          scoring,
-          includeInvalidated: Boolean(includeInvalidated),
-          facts,
-          match: 'tokens'
-        });
-        fuzzy = rows.length > 0;
-      }
       if (!rows.length) {
-        const active = facts.filter((f) => f.status === 'active').length;
-        return {
-          content: [{
-            type: 'text',
-            text: `长期库里没有${query ? `「${query}」的` : ''}记录（现有 ${active} 条有效事实）。可以再用 qq_memory_search 翻聊天原文。`
-          }]
-        };
+        const diag = diagnoseRecall({ query: qtext, facts, now });
+        return { content: [{ type: 'text', text: `${schedBlock ? schedBlock + '\n\n' : ''}${emptyRecallText({ query: qtext, diag })}` }] };
       }
-      const body = rows.map((f) => {
-        const tier = TIER_LABEL[f.tier] || f.tier;
-        const value = String(f.value || f.text || '').replace(/\s+/g, ' ').slice(0, 120);
-        const label = f.label ? `${f.label}：` : '';
-        const src = f.src ? (f.src.kind === 'log' ? `原文 ${String(f.src.day || '').slice(5)}` : f.src.kind === 'card' ? '来自事实卡' : '来源未知') : '';
-  const head = `· [${tier} ${Math.round(Number(f.score) || 0)}] ${label}${value}` + (src ? ` ⟵ ${src}` : '');
-        if (f.feel) return `${head}\n  └ 我当时：${String(f.feel).slice(0, 40)}`;
-        const quote = String(f.quote || '').replace(/\s+/g, ' ').slice(0, 40);
-        return quote ? `${head}\n  └ 原话：${quote}` : head;
-      }).join('\n');
-      const header = fuzzy
-        ? `长期库里没有逐字命中「${query}」的条目；按词相关找到 ${rows.length} 条（可能不完全对题，自己再判一下）：`
-        : `长期库「${query || '(全部)'}」命中 ${rows.length} 条（按档位/分数排序）：`;
-      return { content: [{ type: 'text', text: `${header}\n${body}\n（这些是长期事实，引用时保持一致；和用户最新的话冲突时以最新的话为准。）` }] };
+      const eps = episodeIndex(dir);
+      const { body, anchors } = formatRecallBody(rows, { eps, dir });
+      const hint = explainRoute(qtext);
+      const header = qtext.trim()
+        ? `长期库「${qtext}」找到 ${rows.length} 条（按槽位/主题/主体/词法综合排序，可能含词相关项，自己再判一下${hint ? `；${hint}` : ''}）：`
+        : `长期库命中 ${rows.length} 条（按档位/分数排序）：`;
+      const tail = anchors
+        ? '（这些是长期事实，引用时保持一致；和用户最新的话冲突时以最新的话为准。带 ⟵ 窗口 的，可以用 qq_memory_window(sessionId, turnFrom, turnTo) 展开当时原话；带 📎 的，可以用 qq_memory_photo(sha1) 看当时那张图。）'
+        : '（这些是长期事实，引用时保持一致；和用户最新的话冲突时以最新的话为准。带 📎 的，可以用 qq_memory_photo(sha1) 看当时那张图。）';
+      return { content: [{ type: 'text', text: `${schedBlock ? schedBlock + '\n\n' : ''}${header}\n${body}\n${tail}` }] };
     } catch (error) {
       return { content: [{ type: 'text', text: `长期库检索失败：${error?.message ?? error}` }], isError: true };
     }

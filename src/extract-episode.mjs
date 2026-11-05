@@ -16,7 +16,9 @@ import {
 import { episodeTranscript } from './episode-ai.mjs';
 import { readTurns } from './window.mjs';
 import { parseTime, parseBirthday, birthdayWho } from './timeparse.mjs';
+import { extractEntities } from './entities.mjs';
 import { readEvents, materialize, readInvalidated, appendEvent } from './longterm.mjs';
+import { shouldSkipExtract, recordExtractSkip } from './self-write.mjs';
 
 // 单值槽位：同一个主题下只保留最新一条（旧值会被 supersede 成「以前提过」）。
 const SINGLE_SLOTS = new Set([
@@ -200,6 +202,7 @@ export function factOf(entry, { episode, now = Date.now(), key = '' } = {}) {
   // 3.0 补丁：生日必须落到日期字段，而不是只在 value 里写「3 月 15 日」。
   const birthday = entry.slot === 'birthday' ? parseBirthday(entry.value || entry.quote || '') : null;
   const bWho = birthday ? birthdayWho(entry.value || '', about) : '';
+  const entities = extractEntities(`${entry.value || ''} ${entry.quote || ''}`, { about });
   return {
     ev: 'fact',
     id: `h-ep-${hash32(`${episode?.id}:${entry.topicId}:${entry.slot}:${entry.value}`)}`,
@@ -230,6 +233,7 @@ export function factOf(entry, { episode, now = Date.now(), key = '' } = {}) {
     ...(birthday ? { birthday: { ...birthday, who: bWho } } : {}),
     ...(birthday ? { dates: [{ date: birthday.y ? `${birthday.y}-${birthday.key}` : '', kind: 'birthday', who: bWho, yearly: true, phrase: birthday.phrase }] } : {}),
     ...(entry.kind === 'event' ? { ttlDays: 14 } : {}),
+    ...(entities ? { entities } : {}),
     ...(entry.kind === 'plan' ? {} : {})
   };
 }
@@ -300,6 +304,19 @@ export async function extractIntoStore(dir, episodes, { write = false, request =
       const sig = sigOf(entry.topicId, entry.slot, entry.value);
       const prev = bySig.get(sig);
       const fact = factOf(entry, { episode: ep, key: 'private:10001' });
+      // 3.1：她自己写过同一个「主题+槽位」时，抽取器只补充、不覆盖。
+      const guard = shouldSkipExtract(dir, { topicId: entry.topicId, slot: entry.slot, value: entry.value });
+      if (guard.skip) {
+        recordExtractSkip(dir, {
+          topicId: entry.topicId,
+          slot: entry.slot,
+          value: entry.value,
+          quote: entry.quote,
+          source: { model: 'episode', episodeId: ep.id }
+        });
+        out.skippedSelf = (out.skippedSelf || 0) + 1;
+        continue;
+      }
       if (prev) {
         if (prev.value === entry.value) {
           out.skippedDup += 1;

@@ -60,16 +60,20 @@ test('每天是重复事项，不进 dates', () => {
   assert.equal(r.validUntil, null);
 });
 
-test('无时间词：事实类不给有效期，事件类按当天并标低置信', () => {
+test('无时间词：不编日期，事实类与事件类都不给有效期', () => {
   const f = at('我的相机是 Z8X', { slot: 'gear' });
   assert.equal(f.dates.length, 0);
   assert.equal(f.validUntil, null);
   assert.equal(f.confidence, 0.3);
 
+  // 3.1 P2：这条曾经被「说到就按当天算」坑过——长期计划被标成第二天过期。
+  const plan = at('考研目标定为华光计算机081200，距2029考研约780天', { slot: 'plan' });
+  assert.equal(plan.dates.length, 0);
+  assert.equal(plan.validUntil, null);
+
   const e = at('把物理实验报告写完', { slot: 'event' });
-  assert.equal(e.dates[0].date, '2026-11-04');
-  assert.equal(e.confidence, 0.3);
-  assert.ok(e.validUntil > 0);
+  assert.equal(e.dates.length, 0);
+  assert.equal(e.validUntil, null);
 });
 
 test('who：用户 / 助手 分得开', () => {

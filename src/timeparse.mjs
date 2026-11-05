@@ -1,4 +1,4 @@
-﻿// 相对时间解析：把「今晚 / 明天 / 上个星期四 / 3 月 15 日」在写入时解析成绝对日期与有效期。
+// 相对时间解析：把「今晚 / 明天 / 上个星期四 / 3 月 15 日」在写入时解析成绝对日期与有效期。
 //
 // 为什么要单独一个纯函数文件：这是规则明确、可穷举测试的东西，放进抽取器会把
 // 「理解一句话」和「算日期」搅在一起；出问题时也不好像现在这样一条条对。
@@ -177,12 +177,10 @@ export function parseTime(text = '', opts = {}) {
     }
   }
 
-  // 7) 没有时间词：事件/计划默认「说到就按当天算」，但只在 kindHint 明确要时才给有效期
-  if (kind === 'event') {
-    const date = ymd(today);
-    const validUntil = opts.slot === 'plan' || opts.slot === 'progress' ? endOfDay(today) : nextMorning(today);
-    return { dates: [{ date, kind: 'event', who: null, phrase: '', confidence: 0.3 }], validUntil, phrase: '', confidence: 0.3, recurring: false };
-  }
+  // 7) 没有时间词：不编日期。
+  // 曾经这里给事件/计划默认「说到就按当天算、次日失效」，结果「考研目标华光 081200」
+  // 「还在想清楚要不要考华光」这类长期计划全被标成第二天就过期，卡里只剩旧事。
+  // 现在：没有显式时间词就返回空 dates / validUntil=null，只保留 saidAt 作为时间锚。
   return base;
 }
 

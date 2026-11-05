@@ -3,6 +3,40 @@
 版本号约定：主版本 = 记忆算法/数据模型变更；次版本 = 向后兼容的新能力；修订号 = 修复与文案。
 历史版本（1.0–2.1.1）见仓库 Releases 页。
 
+## 3.1.0 — 2026-11-05
+
+在 3.0 的分层之上，把「记忆」从只读投影推进到**可写、可查、可核对**：她自己能记、能改，检索按问法而不是按字面，图片和课表也有结构化落点。数据格式只增不改，3.0 库直接可用。
+
+### 新增
+
+- **自写事实**（`src/self-write.mjs`）：助手通过 MCP 工具 `qq_memory_write` 写一条 `author:'self'`、第一人称原句的事实，进同一套归并/衰减/卡片/检索；配额 `memory.selfWrite{maxPerDay:5, maxTotal:300, maxValueChars:60, maxTextChars:400, initialI:0.7, protectFromExtract:true}`，抽取器遇到同槽位自写单值只补不改。
+- **修订留痕**（`src/revise.mjs`）：`qq_memory_edit` 只允许改自写事实，产生 `ev:'revise'` 与 `logs/fact-history.jsonl`（before/after/by/at/reason/revision）；回滚等于再修订一次。
+- **问法路由**（`src/route.mjs`）：整句问法 → 槽位 / 主题 / 主体 / 科目 / 日期；`scoring-runner.search` 新增 `match:'smart'`，权重 槽位 8000 > 科目 7000 > 主题 6000 > 词法 ≤1200 > 主体 900，过期 −3000，主体或生日 who 不符再降。
+- **召回格式**（`src/recall-format.mjs`）：命中行带 `⟵ 窗口 MM-DD 轮 a–b` 锚点、自写标〔自己写的〕；空结果给出「我把它当成什么 / 相关但已过期 / 只是词面相近 / 下一步」四段诊断。
+- **图片记忆**（`src/media.mjs`）：入站图片按 sha1 存 `media/YYYY-MM/<sha1>.<ext>`，索引 `state/media.jsonl`；窗口账本只记 `mediaRefs`，图片字节不进注入。MCP `qq_memory_photo` 按 sha1 取原图，HTTP `GET /api/socialV2/memory-photo`，配置 `memory.media{enabled,maxBytes:8388608,maxPerTurn:6,keepDays:0}`。
+- **结构化字段**（`src/entities.mjs`、`src/fields-migrate.mjs`）：事实可带 `entities{people,orgs,places}`（每类 ≤6、总 ≤12）；槽位扩展 `major / exam / course`；课表只在「周几 + 时间/教室 + 课程名」的单条上成立，拼句进 review。
+- **课表**（`src/schedule.mjs`）：`state/calendar.json` 记学期/周次/锚点，课程事实带 `course{name,day,start,end,parity,weekFrom,weekTo,location,semester}`；`coursesOn()` 按周几 + 周次 + 单双周过滤，`scheduleAnswer()` 输出「YYYY-MM-DD 周X · 第 N 周（双周）：- 课程｜时间 · 地点」。配置 `memory.schedule.enabled`。
+- **窗口缺口回填**（`src/gapfill.mjs`）：入站缓存 `noteInbound/peekInbound/consumeInbound`；日终按 `raw/` 反向核对，把「主人说了但没进账本」的连续消息补成一轮（`fidelity:'reconciled'`、`source:'raw-gap'`），日志 `logs/window-gap.log`；CLI `scripts/repair-window-gaps.mjs --days 3 --write`。配置 `memory.window.gapRepair`。
+- **纠正候选**（`src/claims.mjs`）：她说的纠正（含科目/专业代码、非元讨论、非寒暄）落 `state/claims.jsonl` 待确认；确认后写成 `author:'correction'` 事实并退掉旧口径，驳回留审计。配置 `memory.claims`。
+- **脚本**：`fix-fake-time.mjs`、`repair-window-gaps.mjs`、`route-preview.mjs`、`migrate-fields.mjs`、`window-reconcile.mjs`。
+- **工作台**：`/api/history`、`/api/recall`、`/api/media`、`/api/claims`，新增「检索调试」页签、事实修订链、原图预览、待确认纠正卡片。
+
+### 变更
+
+- 检索结果行补 `source / author / voice / saidAt / expired / topicId`，锚点不再恒为空。
+- v10 的 `rankInInject` 改为「结构 rank 优先、激活值 tiebreak」。
+- 卡片：子主题的「标题 + 首行」合并为一条并按主题顺序排；「旧事」行预留至多 20% 预算，避免被分额吃光。
+
+### 修复
+
+- **无时间词的计划被编造失效**：旧规则把没有显式时间的事件/计划当成「当天生效、次日失效」，导致「考研目标」这类长期计划第二天变旧事；现在无显式时间词 → `dates: []`、`validUntil: null`，只留 `saidAt`。存量用 `scripts/fix-fake-time.mjs --write` 清理。
+- 窗口账本漏记主人消息（尤其纠正与课表）：入站缓存 + 日终反向对账，补写 `fidelity:'reconciled'` 的轮次。
+- `episode.segmentTurns` 改为按 `at` 升序，补写行（turn 号大、时间早）不再把情境段切乱。
+
+### 测试
+
+- 479 个用例（相对 3.0.0 新增 93 个，覆盖 13 个新测试文件：self-write / revise / route / route-eval / route-subjects / recall-format / media / window-media / entities / fields-migrate / schedule / gapfill / claims）、验收自检 17 项全部通过。
+
 ## 3.0.0 — 2026-11-04
 
 首个正式版。相对 3.0.0-beta.2，修掉三处会让记忆「停在旧账上」的断档；数据格式不变，beta 库直接可用。

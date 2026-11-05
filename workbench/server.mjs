@@ -21,6 +21,11 @@ import * as cardMod from '../src/card.mjs';
 import * as v10 from '../src/v10.mjs';
 import * as extractModel from '../src/extract-model.mjs';
 import * as topicsMod from '../src/topics.mjs';
+import * as scoringRunner from '../src/scoring-runner.mjs';
+import * as recallFmt from '../src/recall-format.mjs';
+import * as mediaMod from '../src/media.mjs';
+import * as claimsMod from '../src/claims.mjs';
+import * as reviseMod from '../src/revise.mjs';
 import { auditPresets } from '../src/preset-audit.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -269,7 +274,7 @@ function buildGraph(facts, { maxFacts = 240 } = {}) {
   const TOPIC_RULES = [
     ['生日', /生日|寿|蛋糕/],
     ['名字/称呼', /名字|称呼|小名|叫我|自称|我|昵称/],
-    ['住处', /住|示例省份|兰州|宿舍|老家|搬/],
+    ['住处', /住|示例省份|示例城市|宿舍|老家|搬/],
     ['学业/工作', /高考|大学|专业|学院|课|实验|论文|考试|报告|工作|上班|实习/],
     ['喜好', /喜欢|爱|讨厌|不吃|爱吃|受不了|怕|习惯|酸奶|鱼|橘子/],
     ['约定/规则', /答应|约定|不许|必须|只能|以后|别再|不能|规矩/],
@@ -463,6 +468,7 @@ function buildState() {
       } catch (e) { return { cfg: null, shadow: null, error: String((e && e.message) || e) }; }
     })(),
     folds: foldsView(),
+    claims: claimsView(),
     tiers: tierCount,
     health: {
       degraded, summaryFailed,
@@ -827,10 +833,142 @@ function windowView(query = {}) {
       feels: Array.isArray(r.feels) ? r.feels.map((f) => String((f && f.text) || '')) : [],
       chars: Number(r.window && r.window.chars) || 0,
       blocks: Array.isArray(r.window && r.window.blocks) ? r.window.blocks.map((b) => ({ k: b.k, chars: b.chars })) : [],
+      media: Array.isArray(r.mediaRefs) ? r.mediaRefs.map((m) => ({ sha1: m.sha1, kind: m.kind || 'image', mime: m.mime || '', bytes: Number(m.bytes) || 0 })) : [],
     });
   }
   items.reverse();
   return { sessions, sessionId: sid, from, to, total: rows.length, items: items.slice(0, limit) };
+}
+
+
+function factEdit(body = {}) {
+  const dir = wbDataDir();
+  const id = String(body?.id || '').trim();
+  if (!id) { const e = new Error('id 不能为空'); e.status = 400; throw e; }
+  const r = reviseMod.reviseFact(dir, id, {
+    value: body.value,
+    text: body.text,
+    validUntil: body.validUntil,
+    reason: body.reason
+  }, { by: 'owner', role: 'owner' });
+  if (!r.ok) { const e = new Error(r.reason || '这条改不了'); e.status = r.code === 'not-found' ? 404 : 400; throw e; }
+  return {
+    ok: true,
+    action: r.action,
+    before: r.before,
+    after: r.after,
+    fact: r.fact ? { id: r.fact.id, value: r.fact.value, versions: r.fact.versions, revisedBy: r.fact.revisedBy || '' } : null
+  };
+}
+
+function claimsView() {
+  try {
+    const dir = wbDataDir();
+    const topics = topicsMod.readTopics(dir);
+    const nameOf = new Map(topics.map((t) => [t.id, t.name]));
+    const rows = claimsMod.readClaims(dir)
+      .filter((c) => c.status === 'pending')
+      .sort((a, b) => (Number(b.at) || 0) - (Number(a.at) || 0))
+      .slice(0, 20)
+      .map((c) => ({
+        id: c.id,
+        at: c.at,
+        quote: c.quote,
+        src: c.src,
+        program: c.program || '',
+        subjects: c.subjects || [],
+        topicId: c.topicId || '',
+        topicName: nameOf.get(c.topicId) || c.topicId || '',
+        slot: c.slot || '',
+        suggestedValue: c.suggestedValue || '',
+        sessionId: c.sessionId || '',
+        turn: c.turn || 0
+      }));
+    return { ok: true, count: rows.length, items: rows };
+  } catch (e) {
+    return { ok: false, error: String((e && e.message) || e), count: 0, items: [] };
+  }
+}
+
+function claimsOp(body = {}) {
+  const dir = wbDataDir();
+  const id = String(body.id || '');
+  if (!id) return { ok: false, error: '缺少候选 id' };
+  if (body.action === 'reject') return claimsMod.rejectClaim(dir, id, { reason: body.reason || '工作台驳回' });
+  return claimsMod.confirmClaim(dir, id, {
+    topicId: body.topicId,
+    slot: body.slot,
+    program: body.program,
+    subjects: Array.isArray(body.subjects) ? body.subjects : undefined,
+    value: body.value,
+    by: 'owner'
+  });
+}
+
+function historyView(query = {}) {
+  const id = String(query.id || '').trim();
+  if (!id) return { ok: false, error: 'missing id' };
+  const dir = wbDataDir();
+  const evs = longterm.readEvents(dir).rows.filter((r) => r.id === id);
+  const keep = ['fact', 'update', 'supersede', 'revise', 'manual', 'manualReset', 'tier', 'invalidate', 'reinstate', 'merge', 'unmerge', 'expire'];
+  const items = evs.filter((r) => keep.includes(r.ev)).map((r) => ({
+    ev: r.ev,
+    at: Number(r.at) || tsMs(r.at),
+    value: r.value == null ? '' : String(r.value),
+    topicId: r.topicId || '',
+    slot: r.slot || '',
+    author: r.author || '',
+    voice: r.voice || '',
+    reason: r.reason || r.reasonText || '',
+    revision: r.revision || null,
+    invalidated: r.ev === 'invalidate',
+  }));
+  items.sort((a, b) => a.at - b.at);
+  return { ok: true, id, count: items.length, items };
+}
+
+function recallView(query = {}) {
+  const q = String(query.q || '').trim();
+  if (!q) return { ok: false, error: 'missing q' };
+  const limit = Math.min(12, Math.max(1, Number(query.limit) || 6));
+  const dir = wbDataDir();
+  const { mem } = loadBridgeMemory();
+  const now = Date.now();
+  const route = recallFmt.explainRoute(q);
+  let rows = [];
+  try {
+    rows = scoringRunner.search({ query: q, limit, now, scoring: mem.scoring || {}, dir, match: 'smart' });
+  } catch (e) {
+    return { ok: false, error: String((e && e.message) || e), route };
+  }
+  const items = rows.map((f) => ({
+    id: f.id,
+    value: recallFmt.valueOf(f, 160),
+    tier: f.tier || '',
+    slot: f.slot || '',
+    topicId: f.topicId || '',
+    about: f.about || '',
+    author: f.author || '',
+    saidAt: f.saidAt || f.at || null,
+    expired: !!f.expired,
+    score: Number(f.rank || f.score || 0),
+  }));
+  let diag = null;
+  if (!rows.length) {
+    try {
+      const all = longterm.openIndex(dir).facts();
+      diag = recallFmt.diagnoseRecall({ query: q, facts: all, now, limit: 3 });
+    } catch { /* 诊断失败不影响空结果展示 */ }
+  }
+  return { ok: true, query: q, route, count: rows.length, items, diag };
+}
+
+function mediaView(query = {}) {
+  const sha1 = String(query.sha1 || '').trim().toLowerCase();
+  if (!/^[0-9a-f]{40}$/.test(sha1)) return { code: 400, body: { ok: false, error: 'sha1 需 40 位十六进制' } };
+  const hit = mediaMod.readMedia(wbDataDir(), sha1);
+  if (!hit) return { code: 404, body: { ok: false, error: '这张图片没有留在记忆里' } };
+  return { buffer: hit.buffer, type: hit.mimeType || 'application/octet-stream' };
 }
 
 function episodesView(query = {}) {
@@ -1080,6 +1218,9 @@ function exportView(query = {}) {
 
 const routes = {
   'GET /api/state': () => buildState(),
+  'GET /api/claims': () => claimsView(),
+  'POST /api/claims': (body) => claimsOp(body || {}),
+  'POST /api/fact-edit': (body) => factEdit(body || {}),
   'POST /api/config': (body) => ({ desired: saveDesired(body), savedAt: Date.now() }),
   'POST /api/apply': (body) => applyToBridge(body || {}),
   'POST /api/console-url': () => consoleUrl(),
@@ -1093,6 +1234,8 @@ const routes = {
   'GET /api/usage': (body, query) => usageView(query),
   'GET /api/folds': () => foldsView(),
   'GET /api/export': (body, query) => exportView(query),
+  'GET /api/history': (body, query) => historyView(query),
+  'GET /api/recall': (body, query) => recallView(query),
 };
 
 const send = (res, code, body, type = 'application/json; charset=utf-8') => {
@@ -1124,6 +1267,12 @@ const server = http.createServer((req, res) => {  const url = new URL(req.url, '
       return send(res, 200, fs.readFileSync(full), type);
     }
     return send(res, 404, { error: 'asset not found' });
+  }
+  // /api/media?sha1=… → 记忆里的原图（只读，二进制）
+  if (req.method === 'GET' && url.pathname === '/api/media') {
+    const out = mediaView({ sha1: url.searchParams.get('sha1') || '' });
+    if (out.buffer) return send(res, 200, out.buffer, out.type);
+    return send(res, out.code || 404, out.body || { ok: false, error: 'not found' });
   }
   const key = `${req.method} ${url.pathname}`;
   const handler = routes[key];

@@ -23,6 +23,55 @@ const MAX_REPLY = 20000;
 /** 进行中的回合草稿：sessionId -> draft。只放内存，进程重启丢掉即可（那一轮本来就 incomplete）。 */
 const drafts = new Map();
 
+/**
+ * 3.1 P0b（D2）：入站先缓存。
+ * QQ 消息到达时先记在这里，万一这一轮没进 beginTurn/窗口（并发、唤醒失败、回合被合并），
+ * finishTurn / 对账还能把它捞回来，不让消息凭空消失。
+ * key -> [{text,msgId,at}]，只放内存、限 30 分钟。
+ */
+const INBOUND_TTL_MS = 30 * 60 * 1000;
+const INBOUND_MAX = 60;
+const inbound = new Map();
+
+export function noteInbound({ key = '', text = '', msgId = '', at = Date.now() } = {}) {
+  const k = String(key || '').trim();
+  const body = String(text ?? '').trim().slice(0, MAX_USER_RAW);
+  if (!k || !body) return false;
+  const now = Number(at) || Date.now();
+  const list = (inbound.get(k) || []).filter((x) => now - x.at < INBOUND_TTL_MS);
+  const id = String(msgId ?? '');
+  if (list.some((x) => (id && x.msgId === id) || (!id && x.text === body && now - x.at < 60 * 1000))) return false;
+  list.push({ text: body, msgId: id, at: now });
+  inbound.set(k, list.slice(-INBOUND_MAX));
+  return true;
+}
+
+/** 取这个 key 最近一条还没用掉的入站原话（不删除；consumeInbound 才删）。 */
+export function peekInbound(key = '', { maxAgeMs = INBOUND_TTL_MS, now = Date.now() } = {}) {
+  const list = (inbound.get(String(key || '').trim()) || []).filter((x) => now - x.at < maxAgeMs);
+  if (!list.length) return null;
+  return list[list.length - 1];
+}
+
+export function consumeInbound(key = '', { maxAgeMs = INBOUND_TTL_MS, now = Date.now() } = {}) {
+  const k = String(key || '').trim();
+  const item = peekInbound(k, { maxAgeMs, now });
+  if (!item) return null;
+  const list = (inbound.get(k) || []).filter((x) => now - x.at < maxAgeMs && x !== item);
+  if (list.length) inbound.set(k, list);
+  else inbound.delete(k);
+  return item;
+}
+
+export function listInbound() {
+  const out = [];
+  const now = Date.now();
+  for (const [key, list] of inbound) {
+    for (const x of list) if (now - x.at < INBOUND_TTL_MS) out.push({ key, ...x });
+  }
+  return out;
+}
+
 export function sha1(text) {
   return crypto.createHash('sha1').update(String(text ?? ''), 'utf8').digest('hex');
 }
@@ -251,13 +300,25 @@ export function beginTurn({
   msgIds = [],
   windowText = '',
   blocks = [],
+  media = [],
+  mediaRefs = [],
   model = '',
   mode = '',
   at = Date.now()
 } = {}) {
   if (!sessionId) return null;
   const promptText = String(userRaw ?? '');
-  const rawText = ownerTextOf(promptText).slice(0, MAX_USER_RAW);
+  let rawText = ownerTextOf(promptText).slice(0, MAX_USER_RAW);
+  const draftMsgIds = Array.isArray(msgIds) ? msgIds.map(String) : [];
+  // 3.1 P0b（D2）：从 prompt 里没抠出原话时，用入站缓存兜底（消息先到、窗口后到的那几轮）。
+  if (!rawText && String(key || '')) {
+    const p = peekInbound(key);
+    if (p) {
+      rawText = p.text.slice(0, MAX_USER_RAW);
+      if (p.msgId && !draftMsgIds.includes(p.msgId)) draftMsgIds.push(p.msgId);
+      consumeInbound(key);
+    }
+  }
   // at 既能收毫秒数，也能收 ISO 字符串（导入/回填工具会传字符串）。
   const atMs = (() => {
     const n = Number(at);
@@ -271,11 +332,13 @@ export function beginTurn({
     at: atMs,
     userRaw: rawText,
     synthetic: isSyntheticPrompt(promptText),
-    msgIds: Array.isArray(msgIds) ? msgIds.map(String) : [],
+    msgIds: draftMsgIds,
     windowText: String(windowText ?? ''),
     blocks: Array.isArray(blocks) ? blocks : [],
     spoken: [],
     sendFeels: [],
+    // 3.1 P3：这一轮带的图片只存引用（sha1），不把字节写进账本。
+    mediaRefs: (Array.isArray(mediaRefs) && mediaRefs.length ? mediaRefs : media).filter(Boolean).map((m) => ({ ...m })).slice(0, 12),
     model: String(model || ''),
     mode: String(mode || ''),
     startedAt: Date.now()
@@ -356,7 +419,7 @@ export function sweepDrafts({ dir = '', maxAgeMs = 30 * 60 * 1000, reason = 'tim
   return done;
 }
 
-function nextTurnNumber(dir, sessionId, extra = {}) {
+export function nextTurnNumber(dir, sessionId, extra = {}) {
   const clean = Object.fromEntries(
     Object.entries(extra || {}).filter(([, v]) => v !== '' && v != null)
   );
@@ -388,7 +451,17 @@ export function finishTurn({
   mode = ''
 } = {}) {
   if (!dir) return null;
-  const draft = getDraft(sessionId) || { key, sessionId, at: Date.now(), userRaw: '', msgIds: [], windowText: '', blocks: [], spoken: [], model, mode };
+  const draft = getDraft(sessionId) || { key, sessionId, at: Date.now(), userRaw: '', msgIds: [], windowText: '', blocks: [], spoken: [], mediaRefs: [], model, mode };
+  // 3.1 P0b（D2）：这一轮如果没拿到原话，用入站缓存补上（宁可归到这一轮，也不丢消息）。
+  if (!draft.userRaw && String(key || draft.key || '') && !String(reply || '').trim()) {
+    const p = peekInbound(key || draft.key);
+    if (p) {
+      draft.userRaw = p.text.slice(0, MAX_USER_RAW);
+      draft.msgIds = Array.isArray(draft.msgIds) ? draft.msgIds : [];
+      if (p.msgId && !draft.msgIds.includes(p.msgId)) draft.msgIds.push(p.msgId);
+      consumeInbound(key || draft.key);
+    }
+  }
   if (!draft.userRaw && !String(reply || '').trim()) {
     dropTurn(sessionId);
     return null;
@@ -425,6 +498,7 @@ export function finishTurn({
     mode: String(mode || draft.mode || ''),
     model: String(model || draft.model || ''),
     userRaw: { text: draft.userRaw, msgIds: draft.msgIds, chars: draft.userRaw.length, synthetic: draft.synthetic === true },
+    ...(Array.isArray(draft.mediaRefs) && draft.mediaRefs.length ? { mediaRefs: draft.mediaRefs } : {}),
     spoken: draft.spoken.map((s) => ({ kind: s.kind, tool: s.tool, text: s.text })),
     reply: { text: replyText, chars: replyText.length },
     feels,
@@ -726,7 +800,7 @@ export function formatRecentSlice(dir, sessionId, {
 }
 
 /** 对账：窗口 vs 聊天记录（raw）。只读，返回差异报告。 */
-export function reconcileSession({ dir = '', sessionId = '', sinceMs = 0, rawTexts = [] } = {}) {
+export function reconcileSession({ dir = '', sessionId = '', sinceMs = 0, rawTexts = [], rawMessages = [] } = {}) {
   const rows = readTurns(dir, sessionId).filter((r) => !sinceMs || Date.parse(r.at) >= sinceMs);
   const hashSet = new Set(rawTexts.map((t) => sha1(String(t ?? '').trim())));
   const missing = [];
@@ -734,6 +808,25 @@ export function reconcileSession({ dir = '', sessionId = '', sinceMs = 0, rawTex
     const t = ownerTextOf(String(r?.userRaw?.text ?? '')).trim();
     if (!t) continue;
     if (!hashSet.has(sha1(t))) missing.push({ turn: r.turn, chars: t.length, head: t.slice(0, 40) });
+  }
+  // 反向核对：raw 里有、窗口里没有的用户消息（P0b 缺口）。
+  const winIds = new Set();
+  const winHashes = new Set();
+  for (const r of rows) {
+    for (const id of (r?.userRaw?.msgIds || [])) winIds.add(String(id));
+    for (const line of String(r?.userRaw?.text || '').split('\n')) {
+      const t = line.trim();
+      if (t) winHashes.add(sha1(t));
+    }
+  }
+  const rawNot = [];
+  for (const m of Array.isArray(rawMessages) ? rawMessages : []) {
+    const t = String(m?.text ?? '').trim();
+    if (!t) continue;
+    const id = String(m?.msgId ?? '');
+    if (id && winIds.has(id)) continue;
+    if (winHashes.has(sha1(t))) continue;
+    rawNot.push({ at: Number(m?.at) || 0, msgId: id, chars: t.length, head: t.slice(0, 40) });
   }
   return {
     sessionId,
@@ -743,6 +836,8 @@ export function reconcileSession({ dir = '', sessionId = '', sinceMs = 0, rawTex
     feels: rows.reduce((n, r) => n + (r.feels?.length || 0), 0),
     rawUsers: rawTexts.length,
     notInRaw: missing.slice(0, 20),
-    notInRawCount: missing.length
+    notInRawCount: missing.length,
+    rawNotInWindow: rawNot.slice(0, 50),
+    rawNotInWindowCount: rawNot.length
   };
 }

@@ -51,7 +51,13 @@ export function segmentTurns(rows = [], { maxGapMs = MAX_GAP_MS, minTurns = MIN_
   const list = rows
     .filter((r) => r && r.turn)
     .slice()
-    .sort((a, b) => (Number(a.turn) || 0) - (Number(b.turn) || 0));
+    // 先按时间排：P0b 补写的 raw-gap 行是后 append 的，turn 号更大但时间更早。
+    .sort((a, b) => {
+      const ta = ms(a.at);
+      const tb = ms(b.at);
+      if (ta !== tb) return ta - tb;
+      return (Number(a.turn) || 0) - (Number(b.turn) || 0);
+    });
   const raw = [];
   let cur = [];
   for (const row of list) {

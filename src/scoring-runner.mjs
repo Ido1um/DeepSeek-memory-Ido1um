@@ -1,4 +1,4 @@
-﻿// 打分跑批（v7 §4）：入站判分 → 影子/写入 → 日终结算 → 检索排序。
+// 打分跑批（v7 §4）：入站判分 → 影子/写入 → 日终结算 → 检索排序。
 //
 // 三档模式（config.memory.scoring.mode）：
 //   off     完全不跑（线上零行为）
@@ -25,6 +25,7 @@ import {
   round2
 } from './score.mjs';
 import * as lt from './longterm.mjs';
+import { routeQuery, routeScore } from './route.mjs';
 import { writeGate } from './gate.mjs';
 import { attrsOf, fragmentsOf, loadV10, normalizeV10, activationOf, qValueOf, qLevelOf, qLabelOf, detailOf, emotionOf, consolidationOf, interferenceOf, explain as v10Explain, passesSalience } from './v10.mjs';
 import fs from 'node:fs';
@@ -716,19 +717,12 @@ export function search({
   const fastPath = !cfg.versioning || includeHistory;
   const topK = fastPath ? Math.max(limitN * 3, 30) : Infinity;
 
-  // 命中判定：5 个字段任一包含关键词即可。不建数组、不转小写（中文无大小写，
-  // 转小写会在 3 万条上产生大量临时字符串）。
-  // match='tokens' 时改为「整句切成二元组，任一词命中」——真实聊天是整句话，
-  // substring 模式几乎永远匹配不到（只有 CLI 拿关键词查时才有效）。
-  // 短到切不出二元组（「鱼」「嗯」）时退回整句 substring，避免 tokens 模式反而查不到。
-  // 3.0 补丁：结构化槽位兜底——问「生日」时，即使事实文案里没写这两个字，
-  // 也要把 slot=birthday 的事实找出来（用户那条写的是「2007 年 9 月 5 日生」）。
-  // 只做生日一个槽位；完整的「问法→槽位」路由留给 3.1。
-  const SLOT_HINTS = [[/生日|出生|寿辰/, ['birthday']]];
-  const hintSlots = SLOT_HINTS.filter(([re]) => re.test(q)).flatMap(([, slots]) => slots);
-  // 「用户/我」问生日问的是用户的，「她/助手」问的是她的。只影响排序，不改变命中集合。
-  const whoHint = /用户|我(?!们)|咱|俺/.test(q) ? 'owner' : (/助手|小助手|她|我/.test(q) ? 'bot' : '');
-  const hitTokens = match === 'tokens' ? tokensOf(q) : null;
+  // 3.1 B：问法路由（route.mjs）——把问法翻成槽位/主题/主体，词法仍走 tokensOf。
+  // match='smart' 用于真实整句问法；'substring' 保留给 CLI 关键词查询；
+  // 'tokens' 与 smart 同义（旧调用兼容）。
+  const route = routeQuery(q);
+  const wantSmart = match === 'smart' || match === 'tokens';
+  const hitTokens = wantSmart ? tokensOf(q) : null;
   const tokenHit = hitTokens && hitTokens.length ? hitTokens : null;
   const hitOf = (f) => {
     if (!q) return false;
@@ -756,12 +750,27 @@ export function search({
     if (!includeInvalidated && f.status !== 'active') continue;
     // v11：chat 类（寒暄/临时状态）永不进检索，只留在库里等过期
     if (String(f.class || '') === 'chat') continue;
-    const slotHit = hintSlots.length > 0 && hintSlots.includes(String(f.slot || ''));
-    const hit = hitOf(f) || slotHit;
+    const rs = routeScore(f, route);
+    const hit = hitOf(f) || rs.slotHit || rs.subjectHit || rs.dayHit || (wantSmart && rs.topicHit);
     if (q && !hit) continue;
     const bad = (Number(f.badHits) || 0) >= 2 ? 500 : 0;
-    const whoBoost = slotHit && whoHint && f.birthday && f.birthday.who === whoHint ? 800 : 0;
-    const rank = (TIER_RANK[f.tier] || 0) * 1000 + scoreOf(f, now, cfg) + (hit ? 500 : 0) + (slotHit ? 6000 : 0) + whoBoost - bad;
+    // 3.1 排序权重：槽位 8000 > 科目 7000 > 主题 6000 > 课表日命中 4000 > 词法 ≤1200 > 主体 900 > 过期 −3000。
+    const routeBoost = (rs.slotHit ? 8000 : 0)
+      + (rs.subjectHit ? 7000 : 0)
+      + (rs.topicHit ? 6000 : 0)
+      + (rs.dayHit ? 4000 : 0)
+      + (rs.scheduleHit ? 1500 : 0)
+      + Math.min(10, rs.lexicalHits) * 120
+      + (rs.whoHit && (rs.slotHit || rs.topicHit) ? 900 : 0);
+    // 问「她的生日」时，主体不符的同槽位事实不该压过她自己的那条：
+    // 主体明确、槽位命中、about 相反 → 重罚（不是排除，免得主体只有一个时查不到）。
+    const aboutWho = f.about === 'bot' ? 'bot' : 'owner';
+    const whoMismatch = Boolean(route.who) && rs.slotHit && aboutWho !== route.who;
+    // 生日这类「同一槽位存两个人」的事实，结构化 who 比 about 更准。
+    const bdayWho = f.birthday && f.birthday.who ? f.birthday.who : '';
+    const bdayMismatch = Boolean(route.who) && rs.slotHit && bdayWho && bdayWho !== route.who;
+    const rank = (TIER_RANK[f.tier] || 0) * 1000 + scoreOf(f, now, cfg) + (hit ? 500 : 0)
+      + routeBoost - (rs.expired ? 3000 : 0) - (whoMismatch ? 4000 : 0) - (bdayMismatch ? 3000 : 0) - bad;
     scored.push({ f, rank, hit });
   }
   scored.sort((a, b) => b.rank - a.rank);
@@ -773,6 +782,11 @@ export function search({
     feel: (Array.isArray(f.feels) && f.feels.length) ? f.feels[f.feels.length - 1].feel : '',
     id: f.id,
     src: f.src || null,
+    source: f.source || null,
+    author: f.author || 'extract',
+    voice: f.voice || '',
+    saidAt: Number(f.saidAt) || 0,
+    expired: Boolean(f.expired),
     birthday: f.birthday || null,
     slot: f.slot || '',
     status: f.status,
@@ -783,6 +797,7 @@ export function search({
     value: f.value,
     pattern: f.pattern,
     topic: f.topic || '',
+    topicId: f.topicId || '',
     quote: f.quote || '',
     lastAt: f.lastAt || 0,
     versions: Number(f.versions) || 1,
@@ -833,7 +848,9 @@ export function search({
       r.emotion = Number(emotionOf(f, v10cfg, now).toFixed(2));
       if (!r.fragments || !r.fragments.length) r.fragments = fragmentsOf(f.text, f.value, v10cfg.fragmentsMax);
     }
-    if (v10cfg.rankInInject) out = out.slice().sort((x, y) => (y.activation || 0) - (x.activation || 0));
+    // 3.1：结构路由优先（槽位/主题/主体），v10 激活值只做同分 tiebreak。
+    // 旧行为是纯激活值排序，会把「问生日」的 birthday 事实压到后面去。
+    if (v10cfg.rankInInject) out = out.slice().sort((x, y) => (y.rank - x.rank) || ((y.activation || 0) - (x.activation || 0)));
   }
   const rowsOut = out.slice(0, limitN);
   // 只有调用方显式声明「这次是要注入/被真正用到」时才记账：

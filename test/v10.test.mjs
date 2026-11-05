@@ -164,7 +164,7 @@ test('v10：渲染按 D 决定说多细，Q 只加前缀（细节完好时不说
   assert.ok(oldLine.includes('用户养了一条叫小鲸的鱼'), oldLine);
 
   // 中间态：D 0.3–0.6 → 原文 + 「细节记不全了」，Q 高不加前缀
-  const half = { tier: 'long', class: 'note', lastAt: NOW - 30 * DAY, hits: 1, manual: true, value: '用户下个月要去兰州出差', text: '用户下个月要去兰州出差', quote: '用户下个月要去兰州出差', source: { id: 2 } };
+  const half = { tier: 'long', class: 'note', lastAt: NOW - 30 * DAY, hits: 1, manual: true, value: '用户下个月要去示例城市出差', text: '用户下个月要去示例城市出差', quote: '用户下个月要去示例城市出差', source: { id: 2 } };
   const midLine = v10.renderFact(half, { cfg, now: NOW, facts: [half] });
   assert.ok(midLine.includes('细节记不全了'), midLine);
   assert.equal(midLine.includes('我记得'), false, 'Q 高时不加前缀');
